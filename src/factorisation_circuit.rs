@@ -119,22 +119,13 @@ impl<F: Field> CoreBuilder<F> for SimpleCircuit {
 
     fn raw_synthesize_phase0(&mut self, config: &Self::Config, layouter: &mut impl Layouter<F>) {
         println!("raw_synthesize_phase0");
-        let _cell = layouter
+        layouter
             .assign_region(
                 || "myregion",
                 |mut region| {
-                    region.assign_advice(
-                        || "advice a",
-                        config.advice,
-                        0,
-                        || Value::known(F::from(self.input.a)),
-                    )?;
-                    region.assign_advice(
-                        || "advice b",
-                        config.advice,
-                        0,
-                        || Value::known(F::from(self.input.a)),
-                    )
+                    region.assign_advice(config.advice, 0, Value::known(F::from(self.input.a)));
+                    region.assign_advice(config.advice, 0, Value::known(F::from(self.input.a)));
+                    Ok(())
                 },
             )
             .unwrap();

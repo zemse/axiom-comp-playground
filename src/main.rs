@@ -1,7 +1,7 @@
 use axiom_eth::{
-    halo2_base::gates::circuit::{self, BaseCircuitParams, CircuitBuilderStage},
+    halo2_base::gates::circuit::{BaseCircuitParams, CircuitBuilderStage},
     halo2_proofs::dev::MockProver,
-    halo2curves::bn256::{Fq, Fr},
+    halo2curves::bn256::Fr,
     rlc::{circuit::RlcCircuitParams, virtual_region::RlcThreadBreakPoints},
     utils::component::{
         circuit::ComponentCircuitImpl, promise_loader::empty::EmptyPromiseLoader, ComponentCircuit,
@@ -16,7 +16,7 @@ mod factorisation_circuit;
 struct PromiseLoaderParams {}
 
 fn main() {
-    let mut circuit =
+    let circuit =
         ComponentCircuitImpl::<Fr, SimpleCircuit, EmptyPromiseLoader<Fr>>::new_from_stage(
             CircuitBuilderStage::Mock,
             SimpleCircuitParams,
