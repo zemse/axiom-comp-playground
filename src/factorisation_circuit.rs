@@ -1,8 +1,7 @@
 /// Factorisation Circuit
 ///
-/// Goal is to learn Axiom component framework by creating a simple circuit.
-///
-/// In this example we want to prove the knowledge of two numbers which are factors of a public number.
+/// In this example we want to prove the knowledge of two private numbers which are factors of a private number
+/// (currently not exposing product on the instance, but will do once current issues are resolved).
 ///
 use axiom_eth::{
     halo2_base::AssignedValue,
@@ -36,11 +35,11 @@ impl CoreBuilderParams for SimpleCircuitParams {
     }
 }
 
-/// Circuit input for a single Account subquery.
+// Private inputs to our circuit
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct SimpleCircuitInput {
     a: u64,
-    b: usize,
+    b: u64,
 }
 
 impl DummyFrom<SimpleCircuitParams> for SimpleCircuitInput {
@@ -49,11 +48,13 @@ impl DummyFrom<SimpleCircuitParams> for SimpleCircuitInput {
     }
 }
 
+// Raw halo2 configuration
 #[derive(Clone)]
 pub struct SimpleCircuitConfig {
     advice: Column<Advice>,
 }
 
+// TODO reason why we have a circuit component struct as well as SimpleCircuitInput
 pub struct SimpleCircuit {
     input: SimpleCircuitInput,
 }
@@ -77,6 +78,8 @@ impl<F: Field> ComponentBuilder<F> for SimpleCircuit {
         meta: &mut ConstraintSystem<F>,
         _params: Self::Params,
     ) -> Self::Config {
+        // we can add raw halo2 config here
+        // TODO constrain some advice to be multiplication of two advices
         SimpleCircuitConfig {
             advice: meta.advice_column(),
         }
@@ -103,13 +106,11 @@ impl<F: Field> CoreBuilder<F> for SimpleCircuit {
 
     fn virtual_assign_phase0(
         &mut self,
-        // TODO: This could be replaced with a more generic CircuitBuilder. Question: can be CircuitBuilder treated as something like PromiseCircuit?
         _builder: &mut RlcCircuitBuilder<F>,
-        // Core circuits can make promise calls.
         _promise_caller: PromiseCaller<F>,
-        // TODO: Output commitmment
     ) -> CoreBuilderOutput<F, Self::CompType> {
         println!("virtual_assign_phase0");
+        // we can do halo2 lib stuff here
         CoreBuilderOutput {
             public_instances: vec![],
             virtual_table: vec![],
@@ -119,12 +120,13 @@ impl<F: Field> CoreBuilder<F> for SimpleCircuit {
 
     fn raw_synthesize_phase0(&mut self, config: &Self::Config, layouter: &mut impl Layouter<F>) {
         println!("raw_synthesize_phase0");
+        // we can do raw halo2 synthesis stuff here
         layouter
             .assign_region(
                 || "myregion",
                 |mut region| {
                     region.assign_advice(config.advice, 0, Value::known(F::from(self.input.a)));
-                    region.assign_advice(config.advice, 0, Value::known(F::from(self.input.a)));
+                    region.assign_advice(config.advice, 1, Value::known(F::from(self.input.b)));
                     Ok(())
                 },
             )
