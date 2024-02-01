@@ -17,7 +17,7 @@ use crate::factorisation_circuit::{SimpleCircuit, SimpleCircuitInput, SimpleCirc
 mod factorisation_circuit;
 
 fn main() {
-    let k = 22;
+    let k = 19;
     let keccak_f_capacity = 200;
 
     let circuit = ComponentCircuitImpl::<
@@ -33,17 +33,17 @@ fn main() {
         RlcCircuitParams {
             base: BaseCircuitParams {
                 k,
-                num_advice_per_phase: vec![1, 1],
-                num_fixed: 2,
-                num_lookup_advice_per_phase: vec![1, 1],
-                lookup_bits: Some(2),
+                num_advice_per_phase: vec![6, 1],
+                num_fixed: 1,
+                num_lookup_advice_per_phase: vec![],
+                lookup_bits: Some(1),
                 num_instance_columns: 1,
             },
             num_rlc_columns: 1,
         },
     )
     .use_break_points(RlcThreadBreakPoints {
-        base: vec![vec![], vec![]],
+        base: vec![vec![524278, 524277, 524276, 524276, 524278], vec![]],
         rlc: vec![],
     });
 
