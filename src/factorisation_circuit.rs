@@ -9,6 +9,7 @@ use axiom_eth::{
         circuit::{Layouter, Value},
         plonk::{Advice, Column, ConstraintSystem},
     },
+    keccak::KeccakChip,
     rlc::circuit::builder::RlcCircuitBuilder,
     utils::{
         build_utils::dummy::DummyFrom,
@@ -100,16 +101,29 @@ impl<F: Field> CoreBuilder<F> for SimpleCircuit {
     type CoreInput = SimpleCircuitInput;
 
     fn feed_input(&mut self, input: Self::CoreInput) -> anyhow::Result<()> {
+        println!("feed_input {:?}", input);
         self.input = input;
         Ok(())
     }
 
     fn virtual_assign_phase0(
         &mut self,
-        _builder: &mut RlcCircuitBuilder<F>,
-        _promise_caller: PromiseCaller<F>,
+        builder: &mut RlcCircuitBuilder<F>,
+        promise_caller: PromiseCaller<F>,
     ) -> CoreBuilderOutput<F, Self::CompType> {
         println!("virtual_assign_phase0");
+        let keccak =
+            KeccakChip::new_with_promise_collector(builder.range_chip(), promise_caller.clone());
+
+        let ctx = builder.base.main(0);
+
+        println!("inputs {:?}", self.input);
+        let a = ctx.load_witness(F::from(1));
+        println!("load witness a: {:?}", a);
+        let output = keccak.keccak_fixed_len(ctx, vec![a]);
+        let output_bytes = output.output_bytes;
+        println!("after");
+
         // we can do halo2 lib stuff here
         CoreBuilderOutput {
             public_instances: vec![],
@@ -125,8 +139,18 @@ impl<F: Field> CoreBuilder<F> for SimpleCircuit {
             .assign_region(
                 || "myregion",
                 |mut region| {
-                    region.assign_advice(config.advice, 0, Value::known(F::from(self.input.a)));
-                    region.assign_advice(config.advice, 1, Value::known(F::from(self.input.b)));
+                    region.assign_advice(
+                        || "advice a",
+                        config.advice,
+                        0,
+                        || Value::known(F::from(self.input.a)),
+                    )?;
+                    region.assign_advice(
+                        || "advice b",
+                        config.advice,
+                        1,
+                        || Value::known(F::from(self.input.b)),
+                    )?;
                     Ok(())
                 },
             )
