@@ -2,20 +2,24 @@ use axiom_eth::{
     halo2_base::gates::circuit::{BaseCircuitParams, CircuitBuilderStage},
     halo2_proofs::dev::MockProver,
     halo2curves::bn256::Fr,
-    keccak::types::ComponentTypeKeccak,
+    keccak::{promise::generate_keccak_shards_from_calls, types::ComponentTypeKeccak},
     rlc::{circuit::RlcCircuitParams, virtual_region::RlcThreadBreakPoints},
     utils::component::{
         circuit::ComponentCircuitImpl,
         promise_loader::comp_loader::SingleComponentLoaderParams,
         promise_loader::single::{PromiseLoader, PromiseLoaderParams},
+        ComponentCircuit, ComponentPromiseResultsInMerkle, ComponentType,
     },
 };
 
-use crate::factorisation_circuit::{SimpleCircuit, SimpleCircuitParams};
+use crate::factorisation_circuit::{SimpleCircuit, SimpleCircuitInput, SimpleCircuitParams};
 
 mod factorisation_circuit;
 
 fn main() {
+    let k = 22;
+    let keccak_f_capacity = 200;
+
     let circuit = ComponentCircuitImpl::<
         Fr,
         SimpleCircuit,
@@ -28,14 +32,14 @@ fn main() {
         },
         RlcCircuitParams {
             base: BaseCircuitParams {
-                k: 16,
-                num_advice_per_phase: vec![1, 0],
-                num_fixed: 1,
-                num_lookup_advice_per_phase: vec![],
-                lookup_bits: Some(1),
-                num_instance_columns: 0,
+                k,
+                num_advice_per_phase: vec![1, 1],
+                num_fixed: 2,
+                num_lookup_advice_per_phase: vec![1, 1],
+                lookup_bits: Some(2),
+                num_instance_columns: 1,
             },
-            num_rlc_columns: 0,
+            num_rlc_columns: 1,
         },
     )
     .use_break_points(RlcThreadBreakPoints {
@@ -43,12 +47,38 @@ fn main() {
         rlc: vec![],
     });
 
-    let instances = halo2_utils::infer_instance(&circuit, None);
-    println!("{:?}", instances);
+    circuit
+        .feed_input(Box::new(SimpleCircuitInput { a: 3, b: 7 }))
+        .unwrap();
 
-    // let instances = vec![vec![]];
+    let promises = [(
+        ComponentTypeKeccak::<Fr>::get_type_id(),
+        ComponentPromiseResultsInMerkle::from_single_shard(
+            generate_keccak_shards_from_calls(&circuit, keccak_f_capacity)
+                .unwrap()
+                .into_logical_results(),
+        ),
+    )]
+    .into_iter()
+    .collect();
+    circuit.fulfill_promise_results(&promises).unwrap();
 
-    let prover = MockProver::run(15, &circuit, instances).unwrap();
+    println!("promise results fullfilled");
+
+    // let instances = halo2_utils::infer_instance(&circuit, Some(k as u32));
+    // println!("{:?}", instances);
+
+    let public_instances = circuit.get_public_instances();
+
+    let instances = vec![vec![
+        public_instances.output_commit,
+        public_instances.promise_result_commit,
+    ]];
+
+    // halo2_utils::info::print(&circuit)
+
+    println!("running circuit");
+    let prover = MockProver::run(k as u32, &circuit, instances).unwrap();
     println!("verifying constraints");
     prover.assert_satisfied();
 }

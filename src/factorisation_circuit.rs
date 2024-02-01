@@ -39,13 +39,13 @@ impl CoreBuilderParams for SimpleCircuitParams {
 // Private inputs to our circuit
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct SimpleCircuitInput {
-    a: u64,
-    b: u64,
+    pub a: u64,
+    pub b: u64,
 }
 
 impl DummyFrom<SimpleCircuitParams> for SimpleCircuitInput {
     fn dummy_from(_seed: SimpleCircuitParams) -> Self {
-        SimpleCircuitInput { a: 1, b: 2 }
+        SimpleCircuitInput::default()
     }
 }
 
@@ -117,12 +117,9 @@ impl<F: Field> CoreBuilder<F> for SimpleCircuit {
 
         let ctx = builder.base.main(0);
 
-        println!("inputs {:?}", self.input);
         let a = ctx.load_witness(F::from(1));
-        println!("load witness a: {:?}", a);
         let output = keccak.keccak_fixed_len(ctx, vec![a]);
         let output_bytes = output.output_bytes;
-        println!("after");
 
         // we can do halo2 lib stuff here
         CoreBuilderOutput {
