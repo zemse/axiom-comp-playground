@@ -69,11 +69,9 @@ fn main() {
     // println!("{:?}", instances);
 
     let public_instances = circuit.get_public_instances();
+    println!("public_instances {:?}", public_instances);
 
-    let instances = vec![vec![
-        public_instances.output_commit,
-        public_instances.promise_result_commit,
-    ]];
+    let instances = vec![public_instances.into()];
 
     // halo2_utils::info::print(&circuit)
 

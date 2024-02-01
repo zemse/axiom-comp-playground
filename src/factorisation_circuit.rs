@@ -1,10 +1,10 @@
 /// Factorisation Circuit
 ///
 /// In this example we want to prove the knowledge of two private numbers which are factors of a private number
-/// (currently not exposing product on the instance, but will do once current issues are resolved).
+/// whose keccak256 hash is exposed in the public instance.
 ///
 use axiom_eth::{
-    halo2_base::AssignedValue,
+    halo2_base::{gates::GateInstructions, AssignedValue},
     halo2_proofs::{
         circuit::{Layouter, Value},
         plonk::{Advice, Column, ConstraintSystem},
@@ -117,13 +117,14 @@ impl<F: Field> CoreBuilder<F> for SimpleCircuit {
 
         let ctx = builder.base.main(0);
 
-        let a = ctx.load_witness(F::from(1));
-        let output = keccak.keccak_fixed_len(ctx, vec![a]);
-        let output_bytes = output.output_bytes;
+        let a = ctx.load_witness(F::from(self.input.a));
+        let b = ctx.load_witness(F::from(self.input.b));
+        let c = keccak.gate().mul(ctx, a, b);
 
-        // we can do halo2 lib stuff here
+        let hash = keccak.keccak_fixed_len(ctx, vec![c]);
+
         CoreBuilderOutput {
-            public_instances: vec![],
+            public_instances: hash.output_bytes.value().into(),
             virtual_table: vec![],
             logical_results: vec![],
         }
