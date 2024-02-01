@@ -9,7 +9,20 @@ inputs SimpleCircuitInput { a: 0, b: 0 }
 
 load witness a: AssignedValue { value: Trivial(0x0000000000000000000000000000000000000000000000000000000000000001), cell: Some(ContextCell { type_id: "halo2-base:SinglePhaseCoreManager:FirstPhase", context_id: 0, offset: 33345 }) }
 
-PromiseCollector self println PromiseCollector { dependencies_lookup: {"axiom-eth:ComponentTypeKeccak"}, dependencies: ["axiom-eth:ComponentTypeKeccak"], witness_grouped_calls: {}, value_results: {}, value_results_lookup: {}, witness_commits: {"axiom-eth:ComponentTypeKeccak": AssignedValue { value: Trivial(0x0000000000000000000000000000000000000000000000000000000000000000), cell: Some(ContextCell { type_id: "halo2-base:SinglePhaseCoreManager:FirstPhase", context_id: 0, offset: 33344 }) }}, promise_results_ready: true }
+PromiseCollector self println PromiseCollector { 
+    dependencies_lookup: {"axiom-eth:ComponentTypeKeccak"}, 
+    dependencies: ["axiom-eth:ComponentTypeKeccak"], 
+    witness_grouped_calls: {}, 
+    value_results: {}, 
+    value_results_lookup: {}, 
+    witness_commits: {
+        "axiom-eth:ComponentTypeKeccak": AssignedValue { 
+            value: Trivial(0x0000000000000000000000000000000000000000000000000000000000000000), 
+            cell: Some(ContextCell { type_id: "halo2-base:SinglePhaseCoreManager:FirstPhase", context_id: 0, offset: 33344 }) 
+        }
+    }, 
+    promise_results_ready: true 
+}
 
 PromiseCollector::call_impl
 
