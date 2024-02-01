@@ -69,7 +69,7 @@ fn main() {
     // println!("{:?}", instances);
 
     let public_instances = circuit.get_public_instances();
-    println!("public_instances {:?}", public_instances);
+    // println!("public_instances {:?}", public_instances);
 
     let instances = vec![public_instances.into()];
 
