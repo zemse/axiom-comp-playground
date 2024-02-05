@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use axiom_codec::HiLo;
 /// Secret Account Circuit
 ///
 /// In this example we want to prove that we are aware of a special ethereum address
@@ -7,8 +8,10 @@ use std::marker::PhantomData;
 ///
 use axiom_eth::{
     halo2_base::AssignedValue,
-    halo2_proofs::plonk::{Advice, Column},
-    storage::circuit::EthStorageInput,
+    halo2_proofs::{
+        circuit::{AssignedCell, Layouter, Value},
+        plonk::{Advice, Column},
+    },
     utils::{
         build_utils::dummy::DummyFrom,
         component::{
@@ -28,6 +31,7 @@ use axiom_query::{
     },
     utils::codec::AssignedAccountSubquery,
 };
+use ethers_core::types::{Address, H256};
 use serde::{Deserialize, Serialize};
 
 /// Circuit input for a single Account subquery.
@@ -37,18 +41,27 @@ pub struct CircuitInputSecretAccountSubquery {
     pub block_number: u64,
     /// Account proof formatted as MPT input. `proof.storage_pfs` will be empty.
     /// It will contain the correct state root of the block.
-    pub proof: EthStorageInput,
+    pub address: Address,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct SecretAccountInputs<F: Field> {
     pub request: CircuitInputSecretAccountSubquery,
+    pub response: H256,
     pub _phantom: PhantomData<F>,
+}
+
+pub struct Payload<F: Field> {
+    pub block_number: AssignedCell<F, F>,
+    pub address: AssignedCell<F, F>,
+    pub storage_root_hi: AssignedCell<F, F>,
+    pub storage_root_lo: AssignedCell<F, F>,
 }
 
 #[derive(Default)]
 pub struct SecretAccountCircuitBuilder<F: Field> {
     inputs: Option<SecretAccountInputs<F>>,
+    payload: Option<Payload<F>>,
 }
 
 #[derive(Clone)]
@@ -118,6 +131,7 @@ impl<F: Field> CoreBuilder<F> for SecretAccountCircuitBuilder<F> {
         builder: &mut axiom_eth::rlc::circuit::builder::RlcCircuitBuilder<F>,
         promise_caller: axiom_eth::utils::component::promise_collector::PromiseCaller<F>,
     ) -> axiom_eth::utils::component::circuit::CoreBuilderOutput<F, Self::CompType> {
+        println!("virtual_assign_phase0");
         let ctx = builder.base.main(0);
         let block_number =
             ctx.load_witness(F::from(self.inputs.as_ref().unwrap().request.block_number));
@@ -126,8 +140,7 @@ impl<F: Field> CoreBuilder<F> for SecretAccountCircuitBuilder<F> {
                 .as_ref()
                 .unwrap()
                 .request
-                .proof
-                .addr
+                .address
                 .to_scalar()
                 .unwrap(),
         );
@@ -144,12 +157,60 @@ impl<F: Field> CoreBuilder<F> for SecretAccountCircuitBuilder<F> {
                 FieldAccountSubqueryCall(account_subquery),
             )
             .unwrap();
+        // TODO constrain equal promise_storage_root and advice storage_root in raw halo2 side
 
         CoreBuilderOutput {
             public_instances: vec![promise_storage_root.hi(), promise_storage_root.lo()],
             virtual_table: vec![],
             logical_results: vec![],
         }
+    }
+
+    fn raw_synthesize_phase0(&mut self, config: &Self::Config, layouter: &mut impl Layouter<F>) {
+        println!("raw_synthesize_phase0");
+        // we can do raw halo2 synthesis stuff here
+        let [block_number, address, storage_root_hi, storage_root_lo]: [AssignedCell<F, F>; 4] =
+            layouter
+                .assign_region(
+                    || "myregion",
+                    |mut region| {
+                        let inputs = self.inputs.as_ref().unwrap();
+                        let block_number = region.assign_advice(
+                            || "advice block number",
+                            config.advice,
+                            0,
+                            || Value::known(F::from(inputs.request.block_number)),
+                        )?;
+                        let address = region.assign_advice(
+                            || "advice address",
+                            config.advice,
+                            1,
+                            || Value::known(inputs.request.address.to_scalar().unwrap()),
+                        )?;
+                        let storage_root = HiLo::<F>::from(inputs.response);
+                        let storage_root_hi = region.assign_advice(
+                            || "advice storage root hi",
+                            config.advice,
+                            2,
+                            || Value::known(storage_root.hi()),
+                        )?;
+                        let storage_root_lo = region.assign_advice(
+                            || "advice storage root lo",
+                            config.advice,
+                            3,
+                            || Value::known(storage_root.lo()),
+                        )?;
+                        Ok([block_number, address, storage_root_hi, storage_root_lo])
+                    },
+                )
+                .unwrap();
+
+        self.payload = Some(Payload {
+            block_number,
+            address,
+            storage_root_hi,
+            storage_root_lo,
+        });
     }
 }
 
@@ -220,10 +281,11 @@ pub mod circuit {
         // our circuit inputs
         let request = CircuitInputSecretAccountSubquery {
             block_number,
-            proof: proof.clone(),
+            address: proof.addr,
         };
         let input = SecretAccountInputs::<Fr> {
             request,
+            response: storage_root,
             _phantom: PhantomData,
         };
 
