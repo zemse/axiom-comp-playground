@@ -7,16 +7,23 @@ edition = "2021"
 
 [dependencies]
 # axiom-eth = { git = "https://github.com/axiom-crypto/axiom-eth", tag = "axiom-eth-v0.4.0" }
-axiom-eth = { path = "../axiom-eth/axiom-eth" }
+axiom-codec = { path = "../axiom-eth/axiom-codec", default-features = false, features = ["halo2-pse"] }
+axiom-eth = { path = "../axiom-eth/axiom-eth", default-features = false, features = ["halo2-pse"] }
+axiom-query = { path = "../axiom-eth/axiom-query", default-features = false, features = ["halo2-pse"] }
 # axiom-eth = { path = "../axiom-eth/axiom-eth", default-features = false, features = ["halo2-pse", "aggregation", "evm"] }
 anyhow = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false }
-halo2-utils = { path = "../../../opensource/personal/halo2-utils", features = ["circuit-params"]}
+# halo2-utils = { path = "../../../opensource/personal/halo2-utils", features = ["circuit-params"]}
+ethers-core = { version = "=2.0.10" }
+ethers-providers = { version = "=2.0.10" }
+futures = { version = "0.3" }
+itertools = "0.11"
+tokio = { version = "1.33", features = ["macros"] }
 
 [patch."https://github.com/privacy-scaling-explorations/halo2"]
 halo2_proofs = { path = "../../../opensource/external/pse/halo2/halo2_proofs" }
 
 [patch."https://github.com/axiom-crypto/halo2-lib"]
-halo2-base = { path = "../halo2-lib/halo2-base" }
+halo2-base = { path = "../halo2-lib/halo2-base", default-features = false, features = ["halo2-pse"]}
 
