@@ -7,6 +7,7 @@ use axiom_eth::{
     halo2_base::{gates::GateInstructions, AssignedValue},
     halo2_proofs::{
         circuit::{Layouter, Value},
+        dev::MockProver,
         plonk::{Advice, Column, ConstraintSystem},
     },
     keccak::KeccakChip,
@@ -181,8 +182,8 @@ use axiom_eth::{
 type FactorisationCircuit =
     ComponentCircuitImpl<Fr, SimpleCircuitBuilder, PromiseLoader<Fr, ComponentTypeKeccak<Fr>>>;
 
-#[allow(dead_code)]
-pub fn get_circuit() -> (u32, FactorisationCircuit, Vec<Vec<Fr>>) {
+#[tokio::main]
+pub async fn main() {
     let k = 19;
     let keccak_f_capacity = 200;
 
@@ -231,5 +232,8 @@ pub fn get_circuit() -> (u32, FactorisationCircuit, Vec<Vec<Fr>>) {
 
     let instances = vec![public_instances.into()];
 
-    (k as u32, circuit, instances)
+    println!("running circuit");
+    let prover = MockProver::run(k as u32, &circuit, instances).unwrap();
+    println!("verifying constraints");
+    prover.assert_satisfied();
 }

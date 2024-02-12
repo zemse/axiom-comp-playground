@@ -1,15 +1,14 @@
-use std::marker::PhantomData;
-
-use axiom_codec::HiLo;
 /// Secret Account Circuit
 ///
 /// In this example we want to prove that we are aware of a special ethereum address
 /// whose state root is something specific.
 ///
+use axiom_codec::HiLo;
 use axiom_eth::{
     halo2_base::AssignedValue,
     halo2_proofs::{
         circuit::{AssignedCell, Layouter, Value},
+        dev::MockProver,
         plonk::{Advice, Assigned, Column},
     },
     utils::{
@@ -20,6 +19,7 @@ use axiom_eth::{
                 CoreBuilderParams,
             },
             types::{EmptyComponentType, LogicalEmpty},
+            ComponentCircuit,
         },
     },
     zkevm_hashes::util::eth_types::ToScalar,
@@ -33,6 +33,7 @@ use axiom_query::{
 };
 use ethers_core::types::{Address, H256};
 use serde::{Deserialize, Serialize};
+use std::marker::PhantomData;
 
 /// Circuit input for a single Account subquery.
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
@@ -274,7 +275,8 @@ impl<F: Field> CoreBuilder<F> for SecretAccountCircuitBuilder<F> {
     }
 }
 
-pub mod circuit {
+#[tokio::main]
+pub async fn main() {
     use axiom_codec::types::{field_elements::AnySubqueryResult, native::AccountSubquery};
     use axiom_eth::{
         halo2curves::bn256::Fr,
@@ -282,7 +284,7 @@ pub mod circuit {
         utils::component::{
             circuit::ComponentCircuitImpl,
             promise_loader::single::{PromiseLoader, PromiseLoaderParams},
-            ComponentCircuit, ComponentType,
+            ComponentType,
         },
     };
     use axiom_query::components::{
@@ -296,100 +298,96 @@ pub mod circuit {
     use ethers_providers::Middleware;
     use std::marker::PhantomData;
 
-    use crate::secret_account_circuit::SecretAccountParams;
-
-    use super::CircuitInputSecretAccountSubquery;
-    use super::SecretAccountCircuitBuilder;
-    use super::SecretAccountInputs;
-
     type CAccount<F> = ComponentTypeAccountSubquery<F>;
 
     pub type SecretAccountCircuit =
         ComponentCircuitImpl<Fr, SecretAccountCircuitBuilder<Fr>, PromiseLoader<Fr, CAccount<Fr>>>;
 
-    pub async fn generate() -> (u32, SecretAccountCircuit, Vec<Vec<Fr>>) {
-        // parameters
-        let k = 19;
-        let account_capacity = 1;
+    // parameters
+    let k = 19;
+    let account_capacity = 1;
 
-        // witness
-        let block_number = 17143006;
-        let address = "0x0000000000000000000000000000000000000000";
+    // witness
+    let block_number = 17143006;
+    let address = "0x0000000000000000000000000000000000000000";
 
-        // query data from rpc
-        let provider = setup_provider(Chain::Mainnet);
-        let proof = provider
-            .get_proof(address, vec![], Some(block_number.into()))
-            .await
-            .unwrap();
+    // query data from rpc
+    let provider = setup_provider(Chain::Mainnet);
+    let proof = provider
+        .get_proof(address, vec![], Some(block_number.into()))
+        .await
+        .unwrap();
+    // change here
+    // let nonce = H256::from_uint(&U256::from(proof.nonce.as_u64()));
+    let balance = H256::from_uint(&proof.balance);
+    // let storage_root = if proof.storage_hash.is_zero() {
+    //     // RPC provider may give zero storage hash for empty account, but the correct storage hash should be the null root = keccak256(0x80)
+    //     H256::from_slice(&KECCAK_RLP_EMPTY_STRING)
+    // } else {
+    //     proof.storage_hash
+    // };
+    assert_eq!(
+        proof.storage_proof.len(),
+        0,
+        "Storage proof should have length 0 exactly"
+    );
+
+    // TODO this is mostly not needed as this will be done in account component
+    let proof = json_to_mpt_input(proof, 13, 0);
+
+    // our circuit inputs
+    let request = CircuitInputSecretAccountSubquery {
+        block_number,
+        address: proof.addr,
+    };
+    let input = SecretAccountInputs::<Fr> {
+        request,
         // change here
-        // let nonce = H256::from_uint(&U256::from(proof.nonce.as_u64()));
-        let balance = H256::from_uint(&proof.balance);
-        // let storage_root = if proof.storage_hash.is_zero() {
-        //     // RPC provider may give zero storage hash for empty account, but the correct storage hash should be the null root = keccak256(0x80)
-        //     H256::from_slice(&KECCAK_RLP_EMPTY_STRING)
-        // } else {
-        //     proof.storage_hash
-        // };
-        assert_eq!(
-            proof.storage_proof.len(),
-            0,
-            "Storage proof should have length 0 exactly"
-        );
+        // response: nonce,
+        response: balance,
+        // response: storage_root,
+        _phantom: PhantomData,
+    };
 
-        // TODO this is mostly not needed as this will be done in account component
-        let proof = json_to_mpt_input(proof, 13, 0);
+    // list of promise queries and responses into account component
+    let promise_account = OutputAccountShard {
+        results: vec![AnySubqueryResult {
+            subquery: AccountSubquery {
+                block_number: block_number as u32,
+                field_idx: 1, // change here
+                addr: proof.addr,
+            },
+            value: balance, // change here
+        }],
+    };
 
-        // our circuit inputs
-        let request = CircuitInputSecretAccountSubquery {
-            block_number,
-            address: proof.addr,
-        };
-        let input = SecretAccountInputs::<Fr> {
-            request,
-            // change here
-            // response: nonce,
-            response: balance,
-            // response: storage_root,
-            _phantom: PhantomData,
-        };
+    // circuit object
+    let mut circuit = SecretAccountCircuit::new(
+        SecretAccountParams,
+        PromiseLoaderParams::new_for_one_shard(account_capacity),
+        dummy_rlc_circuit_params(k as usize),
+    );
+    circuit.feed_input(Box::new(input)).unwrap();
+    circuit.calculate_params();
+    let promises = [(
+        ComponentTypeAccountSubquery::<Fr>::get_type_id(),
+        shard_into_component_promise_results::<Fr, ComponentTypeAccountSubquery<Fr>>(
+            promise_account.into(),
+        ),
+    )]
+    .into_iter()
+    .collect();
+    circuit.fulfill_promise_results(&promises).unwrap();
+    println!("promise results fullfilled");
 
-        // list of promise queries and responses into account component
-        let promise_account = OutputAccountShard {
-            results: vec![AnySubqueryResult {
-                subquery: AccountSubquery {
-                    block_number: block_number as u32,
-                    field_idx: 1, // change here
-                    addr: proof.addr,
-                },
-                value: balance, // change here
-            }],
-        };
+    let public_instances = circuit.get_public_instances();
+    let instances = vec![public_instances.into()];
 
-        // circuit object
-        let mut circuit = SecretAccountCircuit::new(
-            SecretAccountParams,
-            PromiseLoaderParams::new_for_one_shard(account_capacity),
-            dummy_rlc_circuit_params(k as usize),
-        );
-        circuit.feed_input(Box::new(input)).unwrap();
-        circuit.calculate_params();
-        let promises = [(
-            ComponentTypeAccountSubquery::<Fr>::get_type_id(),
-            shard_into_component_promise_results::<Fr, ComponentTypeAccountSubquery<Fr>>(
-                promise_account.into(),
-            ),
-        )]
-        .into_iter()
-        .collect();
-        circuit.fulfill_promise_results(&promises).unwrap();
-        println!("promise results fullfilled");
+    println!("{:?}", instances);
 
-        let public_instances = circuit.get_public_instances();
-        let instances = vec![public_instances.into()];
-
-        println!("{:?}", instances);
-
-        (k as u32, circuit, instances)
-    }
+    // (k as u32, circuit, instances)
+    println!("running circuit");
+    let prover = MockProver::run(k, &circuit, instances).unwrap();
+    println!("verifying constraints");
+    prover.assert_satisfied();
 }
