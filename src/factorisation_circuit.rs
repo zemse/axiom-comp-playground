@@ -181,6 +181,7 @@ use axiom_eth::{
 type FactorisationCircuit =
     ComponentCircuitImpl<Fr, SimpleCircuitBuilder, PromiseLoader<Fr, ComponentTypeKeccak<Fr>>>;
 
+#[allow(dead_code)]
 pub fn get_circuit() -> (u32, FactorisationCircuit, Vec<Vec<Fr>>) {
     let k = 19;
     let keccak_f_capacity = 200;

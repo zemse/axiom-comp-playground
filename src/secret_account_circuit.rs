@@ -10,7 +10,7 @@ use axiom_eth::{
     halo2_base::AssignedValue,
     halo2_proofs::{
         circuit::{AssignedCell, Layouter, Value},
-        plonk::{Advice, Column},
+        plonk::{Advice, Assigned, Column},
     },
     utils::{
         build_utils::dummy::DummyFrom,
@@ -31,7 +31,7 @@ use axiom_query::{
     },
     utils::codec::AssignedAccountSubquery,
 };
-use ethers_core::types::{Address, BigEndianHash, H256, U64};
+use ethers_core::types::{Address, H256};
 use serde::{Deserialize, Serialize};
 
 /// Circuit input for a single Account subquery.
@@ -51,17 +51,27 @@ pub struct SecretAccountInputs<F: Field> {
     pub _phantom: PhantomData<F>,
 }
 
-pub struct Payload<F: Field> {
-    pub block_number: AssignedCell<F, F>,
-    pub address: AssignedCell<F, F>,
-    pub storage_root_hi: AssignedCell<F, F>,
-    pub storage_root_lo: AssignedCell<F, F>,
+pub struct AxiomPayload<F: Field> {
+    pub block_number: AssignedValue<F>,
+    pub address: AssignedValue<F>,
+    pub storage_root_hi: AssignedValue<F>,
+    pub storage_root_lo: AssignedValue<F>,
+}
+
+type Halo2AssignedCell<F> = AssignedCell<Assigned<F>, F>;
+
+pub struct RawPayload<F: Field> {
+    pub block_number: Halo2AssignedCell<F>,
+    pub address: Halo2AssignedCell<F>,
+    pub storage_root_hi: Halo2AssignedCell<F>,
+    pub storage_root_lo: Halo2AssignedCell<F>,
 }
 
 #[derive(Default)]
 pub struct SecretAccountCircuitBuilder<F: Field> {
     inputs: Option<SecretAccountInputs<F>>,
-    payload: Option<Payload<F>>,
+    axiom_payload: Option<AxiomPayload<F>>,
+    raw_payload: Option<RawPayload<F>>,
 }
 
 #[derive(Clone)]
@@ -89,9 +99,9 @@ impl<F: Field> ComponentBuilder<F> for SecretAccountCircuitBuilder<F> {
         meta: &mut axiom_eth::halo2_proofs::plonk::ConstraintSystem<F>,
         _params: Self::Params,
     ) -> Self::Config {
-        Self::Config {
-            advice: meta.advice_column(),
-        }
+        let advice = meta.advice_column();
+        meta.enable_equality(advice);
+        Self::Config { advice }
     }
 
     fn calculate_params(&mut self) -> Self::Params {
@@ -131,7 +141,7 @@ impl<F: Field> CoreBuilder<F> for SecretAccountCircuitBuilder<F> {
         builder: &mut axiom_eth::rlc::circuit::builder::RlcCircuitBuilder<F>,
         promise_caller: axiom_eth::utils::component::promise_collector::PromiseCaller<F>,
     ) -> axiom_eth::utils::component::circuit::CoreBuilderOutput<F, Self::CompType> {
-        println!("virtual_assign_phase0");
+        println!("virtual_assign_phase0 my");
         let ctx = builder.base.main(0);
         let block_number =
             ctx.load_witness(F::from(self.inputs.as_ref().unwrap().request.block_number));
@@ -144,6 +154,7 @@ impl<F: Field> CoreBuilder<F> for SecretAccountCircuitBuilder<F> {
                 .to_scalar()
                 .unwrap(),
         );
+
         let account_storage_hash_idx = ctx.load_constant(F::from(1)); // change here
 
         let account_subquery = AssignedAccountSubquery {
@@ -159,6 +170,13 @@ impl<F: Field> CoreBuilder<F> for SecretAccountCircuitBuilder<F> {
             .unwrap();
         // TODO constrain equal promise_storage_root and advice storage_root in raw halo2 side
 
+        self.axiom_payload = Some(AxiomPayload {
+            block_number,
+            address: addr,
+            storage_root_hi: promise_storage_root.hi(),
+            storage_root_lo: promise_storage_root.lo(),
+        });
+
         CoreBuilderOutput {
             public_instances: vec![promise_storage_root.hi(), promise_storage_root.lo()],
             virtual_table: vec![],
@@ -167,50 +185,92 @@ impl<F: Field> CoreBuilder<F> for SecretAccountCircuitBuilder<F> {
     }
 
     fn raw_synthesize_phase0(&mut self, config: &Self::Config, layouter: &mut impl Layouter<F>) {
-        println!("raw_synthesize_phase0");
+        println!("raw_synthesize_phase0 my");
         // we can do raw halo2 synthesis stuff here
-        let [block_number, address, storage_root_hi, storage_root_lo]: [AssignedCell<F, F>; 4] =
-            layouter
-                .assign_region(
-                    || "myregion",
-                    |mut region| {
-                        let inputs = self.inputs.as_ref().unwrap();
-                        let block_number = region.assign_advice(
-                            || "advice block number",
-                            config.advice,
-                            0,
-                            || Value::known(F::from(inputs.request.block_number)),
-                        )?;
-                        let address = region.assign_advice(
-                            || "advice address",
-                            config.advice,
-                            1,
-                            || Value::known(inputs.request.address.to_scalar().unwrap()),
-                        )?;
-                        let storage_root = HiLo::<F>::from(inputs.response);
-                        let storage_root_hi = region.assign_advice(
-                            || "advice storage root hi",
-                            config.advice,
-                            2,
-                            || Value::known(storage_root.hi()),
-                        )?;
-                        let storage_root_lo = region.assign_advice(
-                            || "advice storage root lo",
-                            config.advice,
-                            3,
-                            || Value::known(storage_root.lo()),
-                        )?;
-                        Ok([block_number, address, storage_root_hi, storage_root_lo])
-                    },
-                )
-                .unwrap();
+        let [block_number, address, storage_root_hi, storage_root_lo]: [AssignedCell<
+            Assigned<F>,
+            F,
+        >; 4] = layouter
+            .assign_region(
+                || "myregion",
+                |mut region| {
+                    let inputs = self.inputs.as_ref().unwrap();
+                    let block_number = region.assign_advice(
+                        || "advice block number",
+                        config.advice,
+                        0,
+                        || Value::known(Assigned::Trivial(F::from(inputs.request.block_number))),
+                    )?;
+                    let address = region.assign_advice(
+                        || "advice address",
+                        config.advice,
+                        1,
+                        || {
+                            Value::known(Assigned::Trivial(
+                                inputs.request.address.to_scalar().unwrap(),
+                            ))
+                        },
+                    )?;
+                    let storage_root = HiLo::<F>::from(inputs.response);
+                    let storage_root_hi = region.assign_advice(
+                        || "advice storage root hi",
+                        config.advice,
+                        2,
+                        || Value::known(Assigned::Trivial(storage_root.hi())),
+                    )?;
+                    let storage_root_lo = region.assign_advice(
+                        || "advice storage root lo",
+                        config.advice,
+                        3,
+                        || Value::known(Assigned::Trivial(storage_root.lo())),
+                    )?;
+                    Ok([block_number, address, storage_root_hi, storage_root_lo])
+                },
+            )
+            .unwrap();
 
-        self.payload = Some(Payload {
+        self.raw_payload = Some(RawPayload {
             block_number,
             address,
             storage_root_hi,
             storage_root_lo,
         });
+    }
+
+    fn virtual_assign_phase1(
+        &mut self,
+        builder: &mut axiom_eth::rlc::circuit::builder::RlcCircuitBuilder<F>,
+    ) {
+        println!("virtual_assign_phase1 my");
+        if self.raw_payload.is_none() {
+            return;
+        }
+        let raw_payload = self.raw_payload.as_ref().unwrap();
+        let (raw_block_number, raw_address, raw_storage_root_hi, raw_storage_root_lo) = {
+            let cm = builder.copy_manager();
+            let mut cm = cm.lock().unwrap();
+            // let c = raw_payload.block_number.cell();
+            let raw_block_number = cm.load_external_assigned(raw_payload.block_number.clone());
+            let raw_address = cm.load_external_assigned(raw_payload.address.clone());
+            let raw_storage_root_hi =
+                cm.load_external_assigned(raw_payload.storage_root_hi.clone());
+            let raw_storage_root_lo =
+                cm.load_external_assigned(raw_payload.storage_root_lo.clone());
+            (
+                raw_block_number,
+                raw_address,
+                raw_storage_root_hi,
+                raw_storage_root_lo,
+            )
+        };
+
+        let axiom_payload = self.axiom_payload.as_ref().unwrap();
+        let ctx = builder.base.main(0);
+
+        ctx.constrain_equal(&raw_block_number, &axiom_payload.block_number);
+        ctx.constrain_equal(&raw_address, &axiom_payload.address);
+        ctx.constrain_equal(&raw_storage_root_hi, &axiom_payload.storage_root_hi);
+        ctx.constrain_equal(&raw_storage_root_lo, &axiom_payload.storage_root_lo);
     }
 }
 
@@ -218,7 +278,6 @@ pub mod circuit {
     use axiom_codec::types::{field_elements::AnySubqueryResult, native::AccountSubquery};
     use axiom_eth::{
         halo2curves::bn256::Fr,
-        mpt::KECCAK_RLP_EMPTY_STRING,
         providers::{setup_provider, storage::json_to_mpt_input},
         utils::component::{
             circuit::ComponentCircuitImpl,
@@ -233,7 +292,7 @@ pub mod circuit {
             common::shard_into_component_promise_results,
         },
     };
-    use ethers_core::types::{BigEndianHash, Chain, H256, U256};
+    use ethers_core::types::{BigEndianHash, Chain, H256};
     use ethers_providers::Middleware;
     use std::marker::PhantomData;
 
@@ -264,7 +323,7 @@ pub mod circuit {
             .await
             .unwrap();
         // change here
-        let nonce = H256::from_uint(&U256::from(proof.nonce.as_u64()));
+        // let nonce = H256::from_uint(&U256::from(proof.nonce.as_u64()));
         let balance = H256::from_uint(&proof.balance);
         // let storage_root = if proof.storage_hash.is_zero() {
         //     // RPC provider may give zero storage hash for empty account, but the correct storage hash should be the null root = keccak256(0x80)
