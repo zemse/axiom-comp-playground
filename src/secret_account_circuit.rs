@@ -31,7 +31,7 @@ use axiom_query::{
     },
     utils::codec::AssignedAccountSubquery,
 };
-use ethers_core::types::{Address, H256};
+use ethers_core::types::{Address, BigEndianHash, H256, U64};
 use serde::{Deserialize, Serialize};
 
 /// Circuit input for a single Account subquery.
@@ -144,7 +144,7 @@ impl<F: Field> CoreBuilder<F> for SecretAccountCircuitBuilder<F> {
                 .to_scalar()
                 .unwrap(),
         );
-        let account_storage_hash_idx = ctx.load_constant(F::from(2));
+        let account_storage_hash_idx = ctx.load_constant(F::from(1)); // change here
 
         let account_subquery = AssignedAccountSubquery {
             block_number,
@@ -233,7 +233,7 @@ pub mod circuit {
             common::shard_into_component_promise_results,
         },
     };
-    use ethers_core::types::{Chain, H256};
+    use ethers_core::types::{BigEndianHash, Chain, H256, U256};
     use ethers_providers::Middleware;
     use std::marker::PhantomData;
 
@@ -251,7 +251,7 @@ pub mod circuit {
     pub async fn generate() -> (u32, SecretAccountCircuit, Vec<Vec<Fr>>) {
         // parameters
         let k = 19;
-        let account_capacity = 2;
+        let account_capacity = 1;
 
         // witness
         let block_number = 17143006;
@@ -263,12 +263,15 @@ pub mod circuit {
             .get_proof(address, vec![], Some(block_number.into()))
             .await
             .unwrap();
-        let storage_root = if proof.storage_hash.is_zero() {
-            // RPC provider may give zero storage hash for empty account, but the correct storage hash should be the null root = keccak256(0x80)
-            H256::from_slice(&KECCAK_RLP_EMPTY_STRING)
-        } else {
-            proof.storage_hash
-        };
+        // change here
+        let nonce = H256::from_uint(&U256::from(proof.nonce.as_u64()));
+        let balance = H256::from_uint(&proof.balance);
+        // let storage_root = if proof.storage_hash.is_zero() {
+        //     // RPC provider may give zero storage hash for empty account, but the correct storage hash should be the null root = keccak256(0x80)
+        //     H256::from_slice(&KECCAK_RLP_EMPTY_STRING)
+        // } else {
+        //     proof.storage_hash
+        // };
         assert_eq!(
             proof.storage_proof.len(),
             0,
@@ -285,7 +288,10 @@ pub mod circuit {
         };
         let input = SecretAccountInputs::<Fr> {
             request,
-            response: storage_root,
+            // change here
+            // response: nonce,
+            response: balance,
+            // response: storage_root,
             _phantom: PhantomData,
         };
 
@@ -294,10 +300,10 @@ pub mod circuit {
             results: vec![AnySubqueryResult {
                 subquery: AccountSubquery {
                     block_number: block_number as u32,
-                    field_idx: 2, // Storage root field
+                    field_idx: 1, // change here
                     addr: proof.addr,
                 },
-                value: storage_root,
+                value: balance, // change here
             }],
         };
 
