@@ -10,16 +10,20 @@ edition = "2021"
 axiom-codec = { path = "../axiom-eth/axiom-codec", default-features = false, features = ["halo2-pse"] }
 axiom-eth = { path = "../axiom-eth/axiom-eth", default-features = false, features = ["halo2-pse"] }
 axiom-query = { path = "../axiom-eth/axiom-query", default-features = false, features = ["halo2-pse"] }
+halo2_proofs = { path = "../../../opensource/external/pse/halo2/halo2_proofs" }
 # axiom-eth = { path = "../axiom-eth/axiom-eth", default-features = false, features = ["halo2-pse", "aggregation", "evm"] }
 anyhow = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false }
-# halo2-utils = { path = "../../../opensource/personal/halo2-utils", features = ["circuit-params"]}
+halo2-utils = { path = "../../../opensource/personal/halo2-utils", features = ["circuit-params"]}
 ethers-core = { version = "=2.0.10" }
 ethers-providers = { version = "=2.0.10" }
 futures = { version = "0.3" }
 itertools = "0.11"
 tokio = { version = "1.33", features = ["macros"] }
+zkevm-circuits = { path = "../zkevm-circuits/zkevm-circuits", features = ["test-util", "test-circuits"] }
+bus-mapping = { path = "../zkevm-circuits/bus-mapping" }
+eth-types = { path = "../zkevm-circuits/eth-types" }
 
 [patch."https://github.com/privacy-scaling-explorations/halo2"]
 halo2_proofs = { path = "../../../opensource/external/pse/halo2/halo2_proofs" }
