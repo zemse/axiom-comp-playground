@@ -103,18 +103,6 @@ impl<F: Field> ComponentBuilder<F> for ZkevmCircuitBuilder<F> {
                         invalid_tx: false,
                     },
                 },
-                // SuperCircuitParams {
-                //     max_txs: 1,
-                //     max_withdrawals: 1,
-                //     max_calldata: 256,
-                //     mock_randomness: F::from(0x100),
-                //     feature_config: FeatureConfig {
-                //         zero_difficulty: false,
-                //         free_first_tx: false,
-                //         enable_eip1559: false,
-                //         invalid_tx: false,
-                //     },
-                // },
             ),
         }
     }
