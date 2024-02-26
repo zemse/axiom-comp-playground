@@ -10,24 +10,48 @@ edition = "2021"
 axiom-codec = { path = "../axiom-eth/axiom-codec", default-features = false, features = ["halo2-pse"] }
 axiom-eth = { path = "../axiom-eth/axiom-eth", default-features = false, features = ["halo2-pse"] }
 axiom-query = { path = "../axiom-eth/axiom-query", default-features = false, features = ["halo2-pse"] }
-halo2_proofs = { path = "../../../opensource/external/pse/halo2/halo2_proofs" }
+# halo2_proofs = { path = "../../../opensource/external/pse/halo2/halo2_proofs" }
+halo2_proofs = { path = "../scroll-halo2/halo2_proofs" }
 # axiom-eth = { path = "../axiom-eth/axiom-eth", default-features = false, features = ["halo2-pse", "aggregation", "evm"] }
 anyhow = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false }
-halo2-utils = { path = "../../../opensource/personal/halo2-utils", features = ["circuit-params"]}
-ethers-core = { version = "=2.0.10" }
-ethers-providers = { version = "=2.0.10" }
+# halo2-utils = { path = "../../../opensource/personal/halo2-utils", features = ["circuit-params"]}
+ethers-core = { version = "=2.0.7" }
+ethers-providers = { version = "=2.0.7" }
 futures = { version = "0.3" }
 itertools = "0.11"
 tokio = { version = "1.33", features = ["macros"] }
-zkevm-circuits = { path = "../zkevm-circuits/zkevm-circuits", features = ["test-util", "test-circuits"] }
-bus-mapping = { path = "../zkevm-circuits/bus-mapping" }
-eth-types = { path = "../zkevm-circuits/eth-types" }
+# zkevm-circuits = { path = "../zkevm-circuits/zkevm-circuits", features = ["test-util", "test-circuits"] }
+# bus-mapping = { path = "../zkevm-circuits/bus-mapping" }
+# eth-types = { path = "../zkevm-circuits/eth-types" }
+zkevm-circuits = { path = "../scroll-zkevm/zkevm-circuits", features = ["test-circuits"] }
+bus-mapping = { path = "../scroll-zkevm/bus-mapping" }
+eth-types = { path = "../scroll-zkevm/eth-types" }
 
+# halo2_proofs = { path = "../../../opensource/external/pse/halo2/halo2_proofs" }
 [patch."https://github.com/privacy-scaling-explorations/halo2"]
-halo2_proofs = { path = "../../../opensource/external/pse/halo2/halo2_proofs" }
+halo2_proofs = { path = "../scroll-halo2/halo2_proofs" }
+halo2_gadgets = { path = "../scroll-halo2/halo2_gadgets" }
+
+[patch."https://github.com/scroll-tech/halo2"]
+halo2_proofs = { path = "../scroll-halo2/halo2_proofs" }
+halo2_gadgets = { path = "../scroll-halo2/halo2_gadgets" }
+
+[patch."https://github.com/scroll-tech/halo2-lib"]
+# halo2-base = { path = "../scroll-halo2-lib/halo2-base", default-features = false, features = ["halo2-pse"]}
+halo2-base = { path = "../halo2-lib/halo2-base", default-features = false, features = ["halo2-pse"]}
+zkevm-hashes = { path = "../halo2-lib/hashes/zkevm", default-features = false }
 
 [patch."https://github.com/axiom-crypto/halo2-lib"]
 halo2-base = { path = "../halo2-lib/halo2-base", default-features = false, features = ["halo2-pse"]}
+zkevm-hashes = { path = "../halo2-lib/hashes/zkevm", default-features = false }
+# halo2-base = { path = "../scroll-halo2-lib/halo2-base", default-features = false, features = ["halo2-pse"]}
+# zkevm-hashes = { path = "../scroll-halo2-lib/hashes/zkevm", default-features = false }
 
+[patch.crates-io]
+ethers-core = { git = "https://github.com/scroll-tech/ethers-rs.git", branch = "v2.0.7" }
+ethers-providers = { git = "https://github.com/scroll-tech/ethers-rs.git", branch = "v2.0.7" }
+ethers = { git = "https://github.com/scroll-tech/ethers-rs.git", branch = "v2.0.7" }
+ethers-etherscan = { git = "https://github.com/scroll-tech/ethers-rs.git", branch = "v2.0.7" }
+ethers-signers  = { git = "https://github.com/scroll-tech/ethers-rs.git", branch = "v2.0.7" }
