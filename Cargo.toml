@@ -7,11 +7,15 @@ edition = "2021"
 
 [dependencies]
 # axiom-eth = { git = "https://github.com/axiom-crypto/axiom-eth", tag = "axiom-eth-v0.4.0" }
-axiom-codec = { path = "../axiom-eth/axiom-codec", default-features = false, features = ["halo2-pse"] }
-axiom-eth = { path = "../axiom-eth/axiom-eth", default-features = false, features = ["halo2-pse"] }
-axiom-query = { path = "../axiom-eth/axiom-query", default-features = false, features = ["halo2-pse"] }
+# axiom-codec = { path = "../axiom-eth/axiom-codec", default-features = false, features = ["halo2-pse"] }
+# axiom-eth = { path = "../axiom-eth/axiom-eth", default-features = false, features = ["halo2-pse"] }
+# axiom-query = { path = "../axiom-eth/axiom-query", default-features = false, features = ["halo2-pse"] }
+axiom-codec = { git = "https://github.com/zemse/axiom-eth.git", branch = "scroll-static-call", default-features = false, features = ["halo2-pse"] }
+axiom-eth = { git = "https://github.com/zemse/axiom-eth.git", branch = "scroll-static-call", default-features = false, features = ["halo2-pse"] }
+axiom-query = { git = "https://github.com/zemse/axiom-eth.git", branch = "scroll-static-call", default-features = false, features = ["halo2-pse"] }
 # halo2_proofs = { path = "../../../opensource/external/pse/halo2/halo2_proofs" }
-halo2_proofs = { path = "../scroll-halo2/halo2_proofs" }
+# halo2_proofs = { path = "../scroll-halo2/halo2_proofs" }
+halo2_proofs = { git = "https://github.com/zemse/halo2.git", branch = "scroll-static-call", features = ["circuit-params"] }
 # axiom-eth = { path = "../axiom-eth/axiom-eth", default-features = false, features = ["halo2-pse", "aggregation", "evm"] }
 anyhow = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
@@ -25,27 +29,38 @@ tokio = { version = "1.33", features = ["macros"] }
 # zkevm-circuits = { path = "../zkevm-circuits/zkevm-circuits", features = ["test-util", "test-circuits"] }
 # bus-mapping = { path = "../zkevm-circuits/bus-mapping" }
 # eth-types = { path = "../zkevm-circuits/eth-types" }
-zkevm-circuits = { path = "../scroll-zkevm/zkevm-circuits", features = ["test-circuits"] }
-bus-mapping = { path = "../scroll-zkevm/bus-mapping" }
-eth-types = { path = "../scroll-zkevm/eth-types" }
+# zkevm-circuits = { path = "../scroll-zkevm/zkevm-circuits", features = ["test-circuits"] }
+# bus-mapping = { path = "../scroll-zkevm/bus-mapping" }
+# eth-types = { path = "../scroll-zkevm/eth-types" }
+zkevm-circuits = { git = "https://github.com/zemse/zkevm-circuits.git", branch = "scroll-static-call", features = ["test-circuits"] }
+bus-mapping = { git = "https://github.com/zemse/zkevm-circuits.git", branch = "scroll-static-call" }
+eth-types = { git = "https://github.com/zemse/zkevm-circuits.git", branch = "scroll-static-call" }
 
 # halo2_proofs = { path = "../../../opensource/external/pse/halo2/halo2_proofs" }
 [patch."https://github.com/privacy-scaling-explorations/halo2"]
-halo2_proofs = { path = "../scroll-halo2/halo2_proofs" }
-halo2_gadgets = { path = "../scroll-halo2/halo2_gadgets" }
+# halo2_proofs = { path = "../scroll-halo2/halo2_proofs" }
+# halo2_gadgets = { path = "../scroll-halo2/halo2_gadgets" }
+halo2_proofs = { git = "https://github.com/zemse/halo2.git", branch = "scroll-static-call", features = ["circuit-params"] }
+halo2_gadgets = { git = "https://github.com/zemse/halo2.git", branch = "scroll-static-call", features = ["circuit-params"] }
 
 [patch."https://github.com/scroll-tech/halo2"]
-halo2_proofs = { path = "../scroll-halo2/halo2_proofs" }
-halo2_gadgets = { path = "../scroll-halo2/halo2_gadgets" }
+# halo2_proofs = { path = "../scroll-halo2/halo2_proofs" }
+# halo2_gadgets = { path = "../scroll-halo2/halo2_gadgets" }
+halo2_proofs = { git = "https://github.com/zemse/halo2.git", branch = "scroll-static-call", features = ["circuit-params"] }
+halo2_gadgets = { git = "https://github.com/zemse/halo2.git", branch = "scroll-static-call", features = ["circuit-params"] }
 
 [patch."https://github.com/scroll-tech/halo2-lib"]
 # halo2-base = { path = "../scroll-halo2-lib/halo2-base", default-features = false, features = ["halo2-pse"]}
-halo2-base = { path = "../halo2-lib/halo2-base", default-features = false, features = ["halo2-pse"]}
-zkevm-hashes = { path = "../halo2-lib/hashes/zkevm", default-features = false }
+# halo2-base = { path = "../halo2-lib/halo2-base", default-features = false, features = ["halo2-pse"]}
+# zkevm-hashes = { path = "../halo2-lib/hashes/zkevm", default-features = false }
+halo2-base = { git = "https://github.com/zemse/axiom-halo2-lib.git", branch = "scroll-static-call", default-features = false, features = ["halo2-pse"] }
+zkevm-hashes = { git = "https://github.com/zemse/axiom-halo2-lib.git", branch = "scroll-static-call", default-features = false, features = ["halo2-pse"] }
 
 [patch."https://github.com/axiom-crypto/halo2-lib"]
-halo2-base = { path = "../halo2-lib/halo2-base", default-features = false, features = ["halo2-pse"]}
-zkevm-hashes = { path = "../halo2-lib/hashes/zkevm", default-features = false }
+halo2-base = { git = "https://github.com/zemse/axiom-halo2-lib.git", branch = "scroll-static-call", default-features = false, features = ["halo2-pse"] }
+zkevm-hashes = { git = "https://github.com/zemse/axiom-halo2-lib.git", branch = "scroll-static-call", default-features = false, features = ["halo2-pse"] }
+# halo2-base = { path = "../halo2-lib/halo2-base", default-features = false, features = ["halo2-pse"]}
+# zkevm-hashes = { path = "../halo2-lib/hashes/zkevm", default-features = false }
 # halo2-base = { path = "../scroll-halo2-lib/halo2-base", default-features = false, features = ["halo2-pse"]}
 # zkevm-hashes = { path = "../scroll-halo2-lib/hashes/zkevm", default-features = false }
 
