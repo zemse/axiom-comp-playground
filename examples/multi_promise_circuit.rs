@@ -1,5 +1,8 @@
 #![feature(slice_flatten)]
-use axiom_codec::{types::native::StorageSubquery, HiLo};
+use axiom_codec::{
+    types::native::{AccountSubquery, StorageSubquery},
+    HiLo,
+};
 use axiom_eth::{
     halo2_base::{AssignedValue, Context},
     halo2_proofs::{circuit::*, dev::MockProver, plonk::*},
@@ -7,6 +10,7 @@ use axiom_eth::{
         build_utils::dummy::DummyFrom,
         component::{
             circuit::*,
+            promise_loader::combo::PromiseBuilderCombo,
             types::{EmptyComponentType, LogicalEmpty},
         },
     },
@@ -14,10 +18,15 @@ use axiom_eth::{
     Field,
 };
 use axiom_query::{
-    components::subqueries::storage::types::{
-        ComponentTypeStorageSubquery, FieldStorageSubqueryCall, OutputStorageShard,
+    components::subqueries::{
+        account::types::{
+            ComponentTypeAccountSubquery, FieldAccountSubqueryCall, OutputAccountShard,
+        },
+        storage::types::{
+            ComponentTypeStorageSubquery, FieldStorageSubqueryCall, OutputStorageShard,
+        },
     },
-    utils::codec::AssignedStorageSubquery,
+    utils::codec::{AssignedAccountSubquery, AssignedStorageSubquery},
 };
 use ethers_core::types::{Address, H256, U256};
 use itertools::Itertools;
@@ -26,15 +35,53 @@ use std::marker::PhantomData;
 
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct MultiInputs<F: Field> {
+    accounts: Vec<AccountInput<F>>,
     storages: Vec<StorageInput<F>>,
 }
 
 impl<F: Field> MultiInputs<F> {
-    pub fn assign_axiom(&self, ctx: &mut Context<F>) -> Vec<AxiomStoragePayload<F>> {
-        self.storages
-            .iter()
-            .map(|input| input.assign_axiom(ctx))
-            .collect()
+    pub fn assign_axiom(
+        &self,
+        ctx: &mut Context<F>,
+    ) -> (Vec<AxiomAccountPayload<F>>, Vec<AxiomStoragePayload<F>>) {
+        (
+            self.accounts
+                .iter()
+                .map(|input| input.assign_axiom(ctx))
+                .collect(),
+            self.storages
+                .iter()
+                .map(|input| input.assign_axiom(ctx))
+                .collect(),
+        )
+    }
+}
+
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+pub struct AccountInput<F: Field> {
+    pub block_number: u64,
+    pub address: Address,
+    pub field_idx: u64,
+    pub value: H256,
+    pub _marker: PhantomData<F>,
+}
+
+type AxiomAssignedValue<F> = AssignedValue<F>;
+pub struct AxiomAccountPayload<F: Field> {
+    pub block_number: AxiomAssignedValue<F>,
+    pub address: AxiomAssignedValue<F>,
+    pub field_idx: AxiomAssignedValue<F>,
+    pub value: HiLo<AxiomAssignedValue<F>>,
+}
+
+impl<F: Field> AccountInput<F> {
+    pub fn assign_axiom(&self, ctx: &mut Context<F>) -> AxiomAccountPayload<F> {
+        AxiomAccountPayload {
+            block_number: ctx.load_witness(F::from(self.block_number)),
+            address: ctx.load_witness(self.address.to_scalar().unwrap()),
+            field_idx: ctx.load_witness(F::from(self.field_idx)),
+            value: HiLo::<F>::from(self.value).assign(ctx),
+        }
     }
 }
 
@@ -47,7 +94,7 @@ pub struct StorageInput<F: Field> {
     pub _marker: PhantomData<F>,
 }
 
-type AxiomAssignedValue<F> = AssignedValue<F>;
+// type AxiomAssignedValue<F> = AssignedValue<F>;
 pub struct AxiomStoragePayload<F: Field> {
     pub block_number: AxiomAssignedValue<F>,
     pub address: AxiomAssignedValue<F>,
@@ -125,15 +172,15 @@ pub struct SecretStorageConfig {
 }
 
 #[derive(Clone, Default)]
-pub struct SecretStorageParams;
+pub struct MultiInputParams;
 
-impl CoreBuilderParams for SecretStorageParams {
+impl CoreBuilderParams for MultiInputParams {
     fn get_output_params(&self) -> CoreBuilderOutputParams {
         CoreBuilderOutputParams::new(vec![])
     }
 }
-impl<F: Field> DummyFrom<SecretStorageParams> for MultiInputs<F> {
-    fn dummy_from(_seed: SecretStorageParams) -> Self {
+impl<F: Field> DummyFrom<MultiInputParams> for MultiInputs<F> {
+    fn dummy_from(_seed: MultiInputParams) -> Self {
         MultiInputs::default()
     }
 }
@@ -145,14 +192,14 @@ pub struct MultiInputsCircuitBuilder<F: Field> {
 impl<F: Field> ComponentBuilder<F> for MultiInputsCircuitBuilder<F> {
     type Config = SecretStorageConfig;
 
-    type Params = SecretStorageParams;
+    type Params = MultiInputParams;
 
     fn new(_params: Self::Params) -> Self {
         Self { input: None }
     }
 
     fn get_params(&self) -> Self::Params {
-        SecretStorageParams
+        MultiInputParams
     }
 
     fn configure_with_params(
@@ -165,7 +212,7 @@ impl<F: Field> ComponentBuilder<F> for MultiInputsCircuitBuilder<F> {
     }
 
     fn calculate_params(&mut self) -> Self::Params {
-        SecretStorageParams
+        MultiInputParams
     }
 }
 
@@ -197,7 +244,26 @@ impl<F: Field> CoreBuilder<F> for MultiInputsCircuitBuilder<F> {
 
         let payload = self.input.as_ref().unwrap().assign_axiom(ctx);
 
+        let account_assignments: Vec<[AssignedValue<F>; 2]> = payload
+            .0
+            .iter()
+            .map(|p| {
+                promise_caller
+                    .call::<FieldAccountSubqueryCall<F>, ComponentTypeAccountSubquery<F>>(
+                        ctx,
+                        FieldAccountSubqueryCall(AssignedAccountSubquery {
+                            block_number: p.block_number,
+                            addr: p.address,
+                            field_idx: p.field_idx,
+                        }),
+                    )
+                    .unwrap()
+                    .hi_lo()
+            })
+            .collect();
+
         let storage_assignments: Vec<[AssignedValue<F>; 2]> = payload
+            .1
             .iter()
             .map(|p| {
                 promise_caller
@@ -215,7 +281,12 @@ impl<F: Field> CoreBuilder<F> for MultiInputsCircuitBuilder<F> {
             .collect();
 
         CoreBuilderOutput {
-            public_instances: storage_assignments.flatten().to_vec(),
+            public_instances: account_assignments
+                .flatten()
+                .iter()
+                .chain(storage_assignments.flatten().iter())
+                .copied()
+                .collect_vec(),
             virtual_table: vec![],
             logical_results: vec![],
         }
@@ -264,21 +335,49 @@ async fn main() {
     use ethers_providers::Middleware;
     use std::marker::PhantomData;
 
-    use axiom_query::components::subqueries::storage::types::ComponentTypeStorageSubquery;
+    use axiom_query::components::subqueries::{
+        account::types::ComponentTypeAccountSubquery, storage::types::ComponentTypeStorageSubquery,
+    };
 
-    pub type SecretStorageCircuit = ComponentCircuitImpl<
-        Fr,
-        MultiInputsCircuitBuilder<Fr>,
-        PromiseLoader<Fr, ComponentTypeStorageSubquery<Fr>>,
+    type MultiPromiseLoader<F> = PromiseBuilderCombo<
+        F,
+        PromiseLoader<F, ComponentTypeAccountSubquery<F>>,
+        PromiseLoader<F, ComponentTypeStorageSubquery<F>>,
     >;
 
+    pub type MultiInputCircuit =
+        ComponentCircuitImpl<Fr, MultiInputsCircuitBuilder<Fr>, MultiPromiseLoader<Fr>>;
+
     let k = 19;
-    let storage_capacity = 1;
+    let storage_capacity = 10;
+    let account_capacity = 10;
 
     let block_number = 19211974; // random block from 12 feb 2024
 
+    #[derive(Clone, Copy)]
+    enum AccountSubqueryField {
+        Nonce = 0,
+        Balance = 1,
+        StorageRoot = 2,
+    }
+
+    let account_inputs: Vec<(&str, AccountSubqueryField)> = vec![
+        (
+            "0x60594a405d53811d3bc4766596efd80fd545a270",
+            AccountSubqueryField::Nonce,
+        ),
+        (
+            "0x60594a405d53811d3bc4766596efd80fd545a270",
+            AccountSubqueryField::Balance,
+        ),
+        (
+            "0x60594a405d53811d3bc4766596efd80fd545a270",
+            AccountSubqueryField::StorageRoot,
+        ),
+    ];
+
     // input from the witness - list of addresses and storage slots
-    let inputs = vec![
+    let storage_inputs = vec![
         ("0x60594a405d53811d3bc4766596efd80fd545a270", H256::zero()),
         (
             "0x60594a405d53811d3bc4766596efd80fd545a270",
@@ -297,18 +396,45 @@ async fn main() {
     // query data from rpc
     let provider = setup_provider(Chain::Mainnet);
 
+    let mut eth_account_inputs = vec![];
+    for (address, field_idx) in account_inputs {
+        let proof = provider
+            .get_proof(address, vec![], Some(block_number.into()))
+            .await
+            .unwrap();
+        assert_eq!(proof.storage_proof.len(), 0);
+        // let proof = json_to_mpt_input(proof, 13, 0);
+        eth_account_inputs.push((proof, field_idx));
+    }
+
     let mut eth_storage_inputs = vec![];
-    for (address, slot) in inputs {
+    for (address, slot) in storage_inputs {
         let proof = provider
             .get_proof(address, vec![slot], Some(block_number.into()))
             .await
             .unwrap();
-        assert_eq!(proof.storage_proof.len(), 1,);
+        assert_eq!(proof.storage_proof.len(), 1);
         let proof = json_to_mpt_input(proof, 13, 0);
         eth_storage_inputs.push(proof);
     }
 
     let input = MultiInputs::<Fr> {
+        accounts: eth_account_inputs
+            .iter()
+            .map(|(proof, field_idx)| AccountInput {
+                block_number,
+                address: proof.address,
+                field_idx: *field_idx as u64,
+                value: match *field_idx {
+                    AccountSubqueryField::Nonce => {
+                        H256::from_uint(&U256::from(proof.nonce.as_u64()))
+                    }
+                    AccountSubqueryField::Balance => H256::from_uint(&proof.balance),
+                    AccountSubqueryField::StorageRoot => proof.storage_hash,
+                },
+                _marker: PhantomData,
+            })
+            .collect(),
         storages: eth_storage_inputs
             .iter()
             .map(|proof| StorageInput {
@@ -322,7 +448,21 @@ async fn main() {
     };
     println!("{:?}", input);
 
-    let promise = OutputStorageShard {
+    let account_promise = OutputAccountShard {
+        results: input
+            .accounts
+            .iter()
+            .map(|s| AnySubqueryResult {
+                subquery: AccountSubquery {
+                    block_number: s.block_number as u32,
+                    addr: s.address,
+                    field_idx: s.field_idx as u32,
+                },
+                value: s.value,
+            })
+            .collect(),
+    };
+    let storage_promise = OutputStorageShard {
         results: input
             .storages
             .iter()
@@ -337,19 +477,30 @@ async fn main() {
             .collect(),
     };
 
-    let mut circuit = SecretStorageCircuit::new(
-        SecretStorageParams,
-        PromiseLoaderParams::new_for_one_shard(storage_capacity),
+    let mut circuit = MultiInputCircuit::new(
+        MultiInputParams,
+        (
+            PromiseLoaderParams::new_for_one_shard(account_capacity),
+            PromiseLoaderParams::new_for_one_shard(storage_capacity),
+        ),
         dummy_rlc_circuit_params(k as usize),
     );
     circuit.feed_input(Box::new(input)).unwrap();
     circuit.calculate_params();
-    let promises = [(
-        ComponentTypeStorageSubquery::<Fr>::get_type_id(),
-        shard_into_component_promise_results::<Fr, ComponentTypeStorageSubquery<Fr>>(
-            promise.into(),
+    let promises = [
+        (
+            ComponentTypeAccountSubquery::<Fr>::get_type_id(),
+            shard_into_component_promise_results::<Fr, ComponentTypeAccountSubquery<Fr>>(
+                account_promise.into(),
+            ),
         ),
-    )]
+        (
+            ComponentTypeStorageSubquery::<Fr>::get_type_id(),
+            shard_into_component_promise_results::<Fr, ComponentTypeStorageSubquery<Fr>>(
+                storage_promise.into(),
+            ),
+        ),
+    ]
     .into_iter()
     .collect();
     circuit.fulfill_promise_results(&promises).unwrap();
