@@ -1,6 +1,9 @@
 #![feature(slice_flatten)]
 use axiom_codec::{
-    types::native::{AccountSubquery, StorageSubquery},
+    types::{
+        field_elements::AnySubqueryResult,
+        native::{AccountSubquery, StorageSubquery},
+    },
     HiLo,
 };
 use axiom_eth::{
@@ -10,6 +13,7 @@ use axiom_eth::{
         build_utils::dummy::DummyFrom,
         component::{
             circuit::*,
+            promise_collector::PromiseCaller,
             promise_loader::combo::PromiseBuilderCombo,
             types::{EmptyComponentType, LogicalEmpty},
         },
@@ -33,27 +37,234 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
+type AxiomAssignedValue<F> = AssignedValue<F>;
+type Halo2AssignedCell<F> = AssignedCell<Assigned<F>, F>;
+
+trait Assign<F: Field, A, H> {
+    fn assign_axiom(&self, ctx: &mut Context<F>) -> A;
+
+    fn assign_halo2(&self, config: &MultiConfig, layouter: &mut impl Layouter<F>) -> H;
+}
+
+mod account {
+    use super::*;
+
+    pub struct AccountPayload<AssignedType> {
+        pub block_number: AssignedType,
+        pub address: AssignedType,
+        pub field_idx: AssignedType,
+        pub value: HiLo<AssignedType>,
+    }
+
+    pub type AccountSubqueryResult = AnySubqueryResult<AccountSubquery, H256>;
+    pub type AxiomAccountPayload<F> = AccountPayload<AxiomAssignedValue<F>>;
+    pub type Halo2AccountPayload<F> = AccountPayload<Halo2AssignedCell<F>>;
+
+    impl<F: Field> Assign<F, AxiomAccountPayload<F>, Halo2AccountPayload<F>> for AccountSubqueryResult {
+        fn assign_axiom(&self, ctx: &mut Context<F>) -> AxiomAccountPayload<F> {
+            AxiomAccountPayload::<F> {
+                block_number: ctx.load_witness(F::from(self.subquery.block_number as u64)),
+                address: ctx.load_witness(self.subquery.addr.to_scalar().unwrap()),
+                field_idx: ctx.load_witness(F::from(self.subquery.field_idx as u64)),
+                value: HiLo::<F>::from(self.value).assign(ctx),
+            }
+        }
+
+        fn assign_halo2(
+            &self,
+            config: &MultiConfig,
+            layouter: &mut impl Layouter<F>,
+        ) -> Halo2AccountPayload<F> {
+            layouter
+                .assign_region(
+                    || "myregion",
+                    |mut region| {
+                        let mut offset = 0;
+
+                        let mut assign_advice = |value: F| {
+                            let cell = region.assign_advice(
+                                || format!("assign advice {offset} {value:?}"),
+                                config.advice,
+                                offset,
+                                || Value::known(Assigned::Trivial(value)),
+                            );
+                            offset += 1;
+                            cell
+                        };
+                        let block_number: AssignedCell<Assigned<F>, F> =
+                            assign_advice(F::from(self.subquery.block_number as u64))?;
+                        let address = assign_advice(self.subquery.addr.to_scalar().unwrap())?;
+                        let field_idx = assign_advice(F::from(self.subquery.field_idx as u64))?;
+
+                        let mut assign_hilo = |value: HiLo<F>| -> Result<_, Error> {
+                            let [hi, lo] = value.hi_lo();
+                            let hi = assign_advice(hi)?;
+                            let lo = assign_advice(lo)?;
+                            Ok(HiLo::from_lo_hi([hi, lo]))
+                        };
+
+                        let value = assign_hilo(HiLo::from(self.value))?;
+
+                        Ok(Halo2AccountPayload {
+                            block_number,
+                            address,
+                            field_idx,
+                            value,
+                        })
+                    },
+                )
+                .unwrap()
+        }
+    }
+}
+
+mod storage {
+    use eth_types::BigEndianHash;
+
+    use super::*;
+
+    pub struct StoragePayload<AssignedType> {
+        pub block_number: AssignedType,
+        pub address: AssignedType,
+        pub slot: HiLo<AssignedType>,
+        pub value: HiLo<AssignedType>,
+    }
+
+    pub type StorageSubqueryResult = AnySubqueryResult<StorageSubquery, H256>;
+    pub type AxiomStoragePayload<F> = StoragePayload<AxiomAssignedValue<F>>;
+    pub type Halo2StoragePayload<F> = StoragePayload<Halo2AssignedCell<F>>;
+
+    impl<F: Field> Assign<F, AxiomStoragePayload<F>, Halo2StoragePayload<F>> for StorageSubqueryResult {
+        fn assign_axiom(&self, ctx: &mut Context<F>) -> AxiomStoragePayload<F> {
+            AxiomStoragePayload {
+                block_number: ctx.load_witness(F::from(self.subquery.block_number as u64)),
+                address: ctx.load_witness(self.subquery.addr.to_scalar().unwrap()),
+                slot: HiLo::<F>::from(H256::from_uint(&self.subquery.slot)).assign(ctx),
+                value: HiLo::<F>::from(self.value).assign(ctx),
+            }
+        }
+
+        fn assign_halo2(
+            &self,
+            config: &MultiConfig,
+            layouter: &mut impl Layouter<F>,
+        ) -> Halo2StoragePayload<F> {
+            layouter
+                .assign_region(
+                    || "myregion",
+                    |mut region| {
+                        let mut offset = 0;
+
+                        let mut assign_advice = |value: F| {
+                            let cell = region.assign_advice(
+                                || format!("assign advice {offset} {value:?}"),
+                                config.advice,
+                                offset,
+                                || Value::known(Assigned::Trivial(value)),
+                            );
+                            offset += 1;
+                            cell
+                        };
+                        let block_number: AssignedCell<Assigned<F>, F> =
+                            assign_advice(F::from(self.subquery.block_number as u64))?;
+                        let address = assign_advice(self.subquery.addr.to_scalar().unwrap())?;
+
+                        let mut assign_hilo = |value: HiLo<F>| -> Result<_, Error> {
+                            let [hi, lo] = value.hi_lo();
+                            let hi = assign_advice(hi)?;
+                            let lo = assign_advice(lo)?;
+                            Ok(HiLo::from_lo_hi([hi, lo]))
+                        };
+                        let slot = assign_hilo(HiLo::from(H256::from_uint(&self.subquery.slot)))?;
+                        let value = assign_hilo(HiLo::from(self.value))?;
+
+                        Ok(Halo2StoragePayload {
+                            block_number,
+                            address,
+                            slot,
+                            value,
+                        })
+                    },
+                )
+                .unwrap()
+        }
+    }
+}
+
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct MultiInputs<F: Field> {
-    accounts: Vec<AccountInput<F>>,
-    storages: Vec<StorageInput<F>>,
+    accounts: Vec<account::AccountSubqueryResult>,
+    storages: Vec<storage::StorageSubqueryResult>,
+    _marker: PhantomData<F>,
 }
 
 impl<F: Field> MultiInputs<F> {
-    pub fn assign_axiom(
+    fn accounts_assigned(
         &self,
         ctx: &mut Context<F>,
-    ) -> (Vec<AxiomAccountPayload<F>>, Vec<AxiomStoragePayload<F>>) {
-        (
-            self.accounts
-                .iter()
-                .map(|input| input.assign_axiom(ctx))
-                .collect(),
-            self.storages
-                .iter()
-                .map(|input| input.assign_axiom(ctx))
-                .collect(),
-        )
+        promise_caller: &PromiseCaller<F>,
+    ) -> Vec<[AssignedValue<F>; 2]> {
+        self.accounts
+            .iter()
+            .map(|q| {
+                let assigned = q.assign_axiom(ctx);
+                promise_caller
+                    .call::<FieldAccountSubqueryCall<F>, ComponentTypeAccountSubquery<F>>(
+                        ctx,
+                        FieldAccountSubqueryCall(AssignedAccountSubquery {
+                            block_number: assigned.block_number,
+                            addr: assigned.address,
+                            field_idx: assigned.field_idx,
+                        }),
+                    )
+                    .unwrap()
+                    .hi_lo()
+            })
+            .collect()
+    }
+    fn storage_assigned(
+        &self,
+        ctx: &mut Context<F>,
+        promise_caller: &PromiseCaller<F>,
+    ) -> Vec<[AssignedValue<F>; 2]> {
+        self.storages
+            .iter()
+            .map(|p| {
+                let assigned = p.assign_axiom(ctx);
+                promise_caller
+                    .call::<FieldStorageSubqueryCall<F>, ComponentTypeStorageSubquery<F>>(
+                        ctx,
+                        FieldStorageSubqueryCall(AssignedStorageSubquery {
+                            block_number: assigned.block_number,
+                            addr: assigned.address,
+                            slot: assigned.slot,
+                        }),
+                    )
+                    .unwrap()
+                    .hi_lo()
+            })
+            .collect()
+    }
+
+    fn assign_axiom(
+        &self,
+        ctx: &mut Context<F>,
+        promise_caller: &PromiseCaller<F>,
+    ) -> Vec<AssignedValue<F>> {
+        self.storage_assigned(ctx, promise_caller)
+            .iter()
+            .chain(self.accounts_assigned(ctx, promise_caller).iter())
+            .flatten()
+            .copied()
+            .collect_vec()
+    }
+
+    fn assign_halo2(
+        &self,
+        config: &MultiConfig,
+        layouter: &mut impl Layouter<F>,
+    ) -> Vec<Halo2AssignedCell<F>> {
+        todo!()
     }
 }
 
@@ -66,7 +277,6 @@ pub struct AccountInput<F: Field> {
     pub _marker: PhantomData<F>,
 }
 
-type AxiomAssignedValue<F> = AssignedValue<F>;
 pub struct AxiomAccountPayload<F: Field> {
     pub block_number: AxiomAssignedValue<F>,
     pub address: AxiomAssignedValue<F>,
@@ -94,80 +304,8 @@ pub struct StorageInput<F: Field> {
     pub _marker: PhantomData<F>,
 }
 
-// type AxiomAssignedValue<F> = AssignedValue<F>;
-pub struct AxiomStoragePayload<F: Field> {
-    pub block_number: AxiomAssignedValue<F>,
-    pub address: AxiomAssignedValue<F>,
-    pub slot: HiLo<AxiomAssignedValue<F>>,
-    pub value: HiLo<AxiomAssignedValue<F>>,
-}
-
-type Halo2AssignedCell<F> = AssignedCell<Assigned<F>, F>;
-pub struct Halo2Payload<F: Field> {
-    pub block_number: Halo2AssignedCell<F>,
-    pub address: Halo2AssignedCell<F>,
-    pub slot: HiLo<Halo2AssignedCell<F>>,
-    pub value: HiLo<Halo2AssignedCell<F>>,
-}
-
-impl<F: Field> StorageInput<F> {
-    pub fn assign_axiom(&self, ctx: &mut Context<F>) -> AxiomStoragePayload<F> {
-        AxiomStoragePayload {
-            block_number: ctx.load_witness(F::from(self.block_number)),
-            address: ctx.load_witness(self.address.to_scalar().unwrap()),
-            slot: HiLo::<F>::from(self.slot).assign(ctx),
-            value: HiLo::<F>::from(self.value).assign(ctx),
-        }
-    }
-
-    pub fn assign_halo2(
-        &self,
-        config: &SecretStorageConfig,
-        layouter: &mut impl Layouter<F>,
-    ) -> Halo2Payload<F> {
-        layouter
-            .assign_region(
-                || "myregion",
-                |mut region| {
-                    let mut offset = 0;
-
-                    let mut assign_advice = |value: F| {
-                        let cell = region.assign_advice(
-                            || format!("assign advice {offset} {value:?}"),
-                            config.advice,
-                            offset,
-                            || Value::known(Assigned::Trivial(value)),
-                        );
-                        offset += 1;
-                        cell
-                    };
-                    let block_number: AssignedCell<Assigned<F>, F> =
-                        assign_advice(F::from(self.block_number))?;
-                    let address = assign_advice(self.address.to_scalar().unwrap())?;
-
-                    let mut assign_hilo = |value: HiLo<F>| -> Result<_, Error> {
-                        let [hi, lo] = value.hi_lo();
-                        let hi = assign_advice(hi)?;
-                        let lo = assign_advice(lo)?;
-                        Ok(HiLo::from_lo_hi([hi, lo]))
-                    };
-                    let slot = assign_hilo(HiLo::from(self.slot))?;
-                    let value = assign_hilo(HiLo::from(self.value))?;
-
-                    Ok(Halo2Payload {
-                        block_number,
-                        address,
-                        slot,
-                        value,
-                    })
-                },
-            )
-            .unwrap()
-    }
-}
-
 #[derive(Clone)]
-pub struct SecretStorageConfig {
+pub struct MultiConfig {
     advice: Column<Advice>,
 }
 
@@ -190,7 +328,7 @@ pub struct MultiInputsCircuitBuilder<F: Field> {
 }
 
 impl<F: Field> ComponentBuilder<F> for MultiInputsCircuitBuilder<F> {
-    type Config = SecretStorageConfig;
+    type Config = MultiConfig;
 
     type Params = MultiInputParams;
 
@@ -242,51 +380,14 @@ impl<F: Field> CoreBuilder<F> for MultiInputsCircuitBuilder<F> {
 
         let ctx = builder.base.main(0);
 
-        let payload = self.input.as_ref().unwrap().assign_axiom(ctx);
-
-        let account_assignments: Vec<[AssignedValue<F>; 2]> = payload
-            .0
-            .iter()
-            .map(|p| {
-                promise_caller
-                    .call::<FieldAccountSubqueryCall<F>, ComponentTypeAccountSubquery<F>>(
-                        ctx,
-                        FieldAccountSubqueryCall(AssignedAccountSubquery {
-                            block_number: p.block_number,
-                            addr: p.address,
-                            field_idx: p.field_idx,
-                        }),
-                    )
-                    .unwrap()
-                    .hi_lo()
-            })
-            .collect();
-
-        let storage_assignments: Vec<[AssignedValue<F>; 2]> = payload
-            .1
-            .iter()
-            .map(|p| {
-                promise_caller
-                    .call::<FieldStorageSubqueryCall<F>, ComponentTypeStorageSubquery<F>>(
-                        ctx,
-                        FieldStorageSubqueryCall(AssignedStorageSubquery {
-                            block_number: p.block_number,
-                            addr: p.address,
-                            slot: p.slot,
-                        }),
-                    )
-                    .unwrap()
-                    .hi_lo()
-            })
-            .collect();
+        let promise_results = self
+            .input
+            .as_ref()
+            .unwrap()
+            .assign_axiom(ctx, &promise_caller);
 
         CoreBuilderOutput {
-            public_instances: account_assignments
-                .flatten()
-                .iter()
-                .chain(storage_assignments.flatten().iter())
-                .copied()
-                .collect_vec(),
+            public_instances: promise_results, // this should not be public
             virtual_table: vec![],
             logical_results: vec![],
         }
@@ -318,10 +419,9 @@ impl<F: Field> CoreBuilder<F> for MultiInputsCircuitBuilder<F> {
 
 #[tokio::main]
 async fn main() {
-    use axiom_codec::types::field_elements::AnySubqueryResult;
     use axiom_eth::{
         halo2curves::bn256::Fr,
-        providers::{setup_provider, storage::json_to_mpt_input},
+        providers::setup_provider,
         utils::component::{
             circuit::ComponentCircuitImpl,
             promise_loader::single::{PromiseLoader, PromiseLoaderParams},
@@ -361,6 +461,7 @@ async fn main() {
         StorageRoot = 2,
     }
 
+    // input from the witness
     let account_inputs: Vec<(&str, AccountSubqueryField)> = vec![
         (
             "0x60594a405d53811d3bc4766596efd80fd545a270",
@@ -375,8 +476,6 @@ async fn main() {
             AccountSubqueryField::StorageRoot,
         ),
     ];
-
-    // input from the witness - list of addresses and storage slots
     let storage_inputs = vec![
         ("0x60594a405d53811d3bc4766596efd80fd545a270", H256::zero()),
         (
@@ -396,85 +495,49 @@ async fn main() {
     // query data from rpc
     let provider = setup_provider(Chain::Mainnet);
 
-    let mut eth_account_inputs = vec![];
+    let mut account_subqueries = vec![];
     for (address, field_idx) in account_inputs {
         let proof = provider
             .get_proof(address, vec![], Some(block_number.into()))
             .await
             .unwrap();
         assert_eq!(proof.storage_proof.len(), 0);
-        // let proof = json_to_mpt_input(proof, 13, 0);
-        eth_account_inputs.push((proof, field_idx));
+        account_subqueries.push(account::AccountSubqueryResult {
+            subquery: AccountSubquery {
+                block_number: block_number as u32,
+                addr: proof.address,
+                field_idx: field_idx as u32,
+            },
+            value: match field_idx {
+                AccountSubqueryField::Nonce => H256::from_uint(&U256::from(proof.nonce.as_u64())),
+                AccountSubqueryField::Balance => H256::from_uint(&proof.balance),
+                AccountSubqueryField::StorageRoot => proof.storage_hash,
+            },
+        });
     }
 
-    let mut eth_storage_inputs = vec![];
+    let mut storage_subqueries = vec![];
     for (address, slot) in storage_inputs {
         let proof = provider
             .get_proof(address, vec![slot], Some(block_number.into()))
             .await
             .unwrap();
         assert_eq!(proof.storage_proof.len(), 1);
-        let proof = json_to_mpt_input(proof, 13, 0);
-        eth_storage_inputs.push(proof);
+        // let proof = json_to_mpt_input(proof, 13, 0);
+        storage_subqueries.push(storage::StorageSubqueryResult {
+            subquery: StorageSubquery {
+                block_number: block_number as u32,
+                addr: proof.address,
+                slot: proof.storage_proof[0].key.into_uint(),
+            },
+            value: H256::from_uint(&proof.storage_proof[0].value),
+        });
     }
 
-    let input = MultiInputs::<Fr> {
-        accounts: eth_account_inputs
-            .iter()
-            .map(|(proof, field_idx)| AccountInput {
-                block_number,
-                address: proof.address,
-                field_idx: *field_idx as u64,
-                value: match *field_idx {
-                    AccountSubqueryField::Nonce => {
-                        H256::from_uint(&U256::from(proof.nonce.as_u64()))
-                    }
-                    AccountSubqueryField::Balance => H256::from_uint(&proof.balance),
-                    AccountSubqueryField::StorageRoot => proof.storage_hash,
-                },
-                _marker: PhantomData,
-            })
-            .collect(),
-        storages: eth_storage_inputs
-            .iter()
-            .map(|proof| StorageInput {
-                block_number,
-                address: proof.addr,
-                slot: proof.storage_pfs[0].0,
-                value: H256::from_uint(&proof.storage_pfs[0].1),
-                _marker: PhantomData,
-            })
-            .collect(),
-    };
-    println!("{:?}", input);
-
-    let account_promise = OutputAccountShard {
-        results: input
-            .accounts
-            .iter()
-            .map(|s| AnySubqueryResult {
-                subquery: AccountSubquery {
-                    block_number: s.block_number as u32,
-                    addr: s.address,
-                    field_idx: s.field_idx as u32,
-                },
-                value: s.value,
-            })
-            .collect(),
-    };
-    let storage_promise = OutputStorageShard {
-        results: input
-            .storages
-            .iter()
-            .map(|s| AnySubqueryResult {
-                subquery: StorageSubquery {
-                    block_number: s.block_number as u32,
-                    addr: s.address,
-                    slot: U256::from_big_endian(&s.slot.to_fixed_bytes()),
-                },
-                value: s.value,
-            })
-            .collect(),
+    let circuit_input = MultiInputs::<Fr> {
+        accounts: account_subqueries,
+        storages: storage_subqueries,
+        _marker: PhantomData,
     };
 
     let mut circuit = MultiInputCircuit::new(
@@ -485,19 +548,25 @@ async fn main() {
         ),
         dummy_rlc_circuit_params(k as usize),
     );
-    circuit.feed_input(Box::new(input)).unwrap();
+    circuit.feed_input(Box::new(circuit_input.clone())).unwrap();
     circuit.calculate_params();
     let promises = [
         (
             ComponentTypeAccountSubquery::<Fr>::get_type_id(),
             shard_into_component_promise_results::<Fr, ComponentTypeAccountSubquery<Fr>>(
-                account_promise.into(),
+                OutputAccountShard {
+                    results: circuit_input.accounts.clone(),
+                }
+                .into(),
             ),
         ),
         (
             ComponentTypeStorageSubquery::<Fr>::get_type_id(),
             shard_into_component_promise_results::<Fr, ComponentTypeStorageSubquery<Fr>>(
-                storage_promise.into(),
+                OutputStorageShard {
+                    results: circuit_input.storages,
+                }
+                .into(),
             ),
         ),
     ]
