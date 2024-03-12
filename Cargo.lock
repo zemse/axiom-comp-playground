@@ -480,7 +480,6 @@ checksum = "8ea184aa71bb362a1157c896979544cc23974e08fd265f29ea96b59f0b4a555b"
 [[package]]
 name = "bus-mapping"
 version = "0.1.0"
-source = "git+https://github.com/zemse/zkevm-circuits.git?branch=scroll-static-call#c9e23c64aa76bdb62e44056140b9e063bbf95cb9"
 dependencies = [
  "eth-types",
  "ethers-core",
@@ -1104,8 +1103,8 @@ dependencies = [
 [[package]]
 name = "eth-types"
 version = "0.1.0"
-source = "git+https://github.com/zemse/zkevm-circuits.git?branch=scroll-static-call#c9e23c64aa76bdb62e44056140b9e063bbf95cb9"
 dependencies = [
+ "axiom-eth",
  "ethers-core",
  "ethers-signers",
  "halo2-base",
@@ -1257,7 +1256,6 @@ dependencies = [
 [[package]]
 name = "external-tracer"
 version = "0.1.0"
-source = "git+https://github.com/zemse/zkevm-circuits.git?branch=scroll-static-call#c9e23c64aa76bdb62e44056140b9e063bbf95cb9"
 dependencies = [
  "eth-types",
  "geth-utils",
@@ -1449,7 +1447,6 @@ dependencies = [
 [[package]]
 name = "gadgets"
 version = "0.1.0"
-source = "git+https://github.com/zemse/zkevm-circuits.git?branch=scroll-static-call#c9e23c64aa76bdb62e44056140b9e063bbf95cb9"
 dependencies = [
  "eth-types",
  "halo2_proofs",
@@ -1471,7 +1468,6 @@ dependencies = [
 [[package]]
 name = "geth-utils"
 version = "0.1.0"
-source = "git+https://github.com/zemse/zkevm-circuits.git?branch=scroll-static-call#c9e23c64aa76bdb62e44056140b9e063bbf95cb9"
 dependencies = [
  "env_logger",
  "gobuild",
@@ -2093,7 +2089,6 @@ dependencies = [
 [[package]]
 name = "keccak256"
 version = "0.1.0"
-source = "git+https://github.com/zemse/zkevm-circuits.git?branch=scroll-static-call#c9e23c64aa76bdb62e44056140b9e063bbf95cb9"
 dependencies = [
  "env_logger",
  "eth-types",
@@ -2198,7 +2193,6 @@ dependencies = [
 [[package]]
 name = "mock"
 version = "0.1.0"
-source = "git+https://github.com/zemse/zkevm-circuits.git?branch=scroll-static-call#c9e23c64aa76bdb62e44056140b9e063bbf95cb9"
 dependencies = [
  "eth-types",
  "ethers-core",
@@ -2213,7 +2207,6 @@ dependencies = [
 [[package]]
 name = "mpt-zktrie"
 version = "0.1.0"
-source = "git+https://github.com/zemse/zkevm-circuits.git?branch=scroll-static-call#c9e23c64aa76bdb62e44056140b9e063bbf95cb9"
 dependencies = [
  "eth-types",
  "halo2-mpt-circuits",
@@ -4500,7 +4493,6 @@ dependencies = [
 [[package]]
 name = "zkevm-circuits"
 version = "0.1.0"
-source = "git+https://github.com/zemse/zkevm-circuits.git?branch=scroll-static-call#c9e23c64aa76bdb62e44056140b9e063bbf95cb9"
 dependencies = [
  "array-init",
  "bus-mapping",

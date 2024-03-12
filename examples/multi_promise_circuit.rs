@@ -1,4 +1,5 @@
 #![feature(slice_flatten)]
+use account::AccountPayload;
 use axiom_codec::{
     types::{
         field_elements::AnySubqueryResult,
@@ -32,10 +33,11 @@ use axiom_query::{
     },
     utils::codec::{AssignedAccountSubquery, AssignedStorageSubquery},
 };
-use ethers_core::types::{Address, H256, U256};
-use itertools::Itertools;
-use serde::{Deserialize, Serialize};
+use ethers_core::types::{H256, U256};
+use serde::Serialize;
 use std::marker::PhantomData;
+use storage::StoragePayload;
+use zkevm_circuits::evm_circuit::util::rlc;
 
 type AxiomAssignedValue<F> = AssignedValue<F>;
 type Halo2AssignedCell<F> = AssignedCell<Assigned<F>, F>;
@@ -43,17 +45,389 @@ type Halo2AssignedCell<F> = AssignedCell<Assigned<F>, F>;
 trait Assign<F: Field, A, H> {
     fn assign_axiom(&self, ctx: &mut Context<F>) -> A;
 
-    fn assign_halo2(&self, config: &MultiConfig, layouter: &mut impl Layouter<F>) -> H;
+    fn assign_halo2(
+        &self,
+        config: &init_state::InitStateTable,
+        layouter: &mut impl Layouter<F>,
+        randomness: Value<F>,
+    ) -> H;
+}
+
+mod init_state {
+    use eth_types::{BigEndianHash, ToLittleEndian};
+    use zkevm_circuits::{
+        evm_circuit::util::rlc,
+        table::{LookupTable, RwTableTag},
+        witness::Block,
+    };
+
+    use super::*;
+
+    /// Tag to identify the field in a Init State Table row
+    /// Keep the sequence consistent with OpcodeId for scalar
+    #[derive(Clone, Copy, Debug)]
+    pub enum FieldTag {
+        /// Storage field, field_tag is zero for AccountStorage
+        Storage = 0,
+        /// Nonce field
+        Nonce = 1,
+        /// Balance field
+        Balance = 2,
+        /// CodeHash field
+        CodeHash = 3,
+    }
+
+    #[derive(Clone, Default, Debug, Serialize)]
+    pub struct InitState<F: Field> {
+        pub accounts: Vec<account::AccountSubqueryResult>,
+        pub storages: Vec<storage::StorageSubqueryResult>,
+        pub _marker: PhantomData<F>,
+    }
+
+    impl<F: Field> InitState<F> {
+        pub fn from_witness_block(block: &Block<F>) -> Self {
+            let block_number = block
+                .txs
+                .first()
+                .map(|tx| tx.block_number)
+                .unwrap_or_default();
+
+            // TODO remove duplicates as in EVM same state can be accessed again
+            let mut account_subqueries = vec![];
+            let account_rws = block.rws.0.get(&RwTableTag::Account).unwrap();
+            for rw in account_rws.iter() {
+                account_subqueries.push(account::AccountSubqueryResult {
+                    subquery: AccountSubquery {
+                        block_number: block_number as u32,
+                        addr: rw.address().unwrap(),
+                        field_idx: match rw.field_tag().unwrap() {
+                            1 => FieldTag::Nonce as u32,
+                            2 => FieldTag::Balance as u32,
+                            3 => FieldTag::CodeHash as u32,
+                            _ => unreachable!(),
+                        },
+                    },
+                    value: H256::from_uint(&rw.account_value_pair().0),
+                });
+            }
+
+            let mut storage_subqueries = vec![];
+            let storage_rws = block.rws.0.get(&RwTableTag::AccountStorage).unwrap();
+            for rw in storage_rws.iter() {
+                storage_subqueries.push(storage::StorageSubqueryResult {
+                    subquery: StorageSubquery {
+                        block_number: block_number as u32,
+                        addr: rw.address().unwrap(),
+                        slot: rw.storage_key().unwrap(),
+                    },
+                    value: H256::from_uint(&rw.account_value_pair().0),
+                });
+            }
+
+            Self {
+                accounts: account_subqueries,
+                storages: storage_subqueries,
+                _marker: PhantomData,
+            }
+        }
+
+        pub fn accounts_assigned(
+            &self,
+            ctx: &mut Context<F>,
+            promise_caller: &PromiseCaller<F>,
+        ) -> Vec<AccountPayload<AssignedValue<F>>> {
+            self.accounts
+                .iter()
+                .map(|q| {
+                    let assigned = q.assign_axiom(ctx);
+                    let result = promise_caller
+                        .call::<FieldAccountSubqueryCall<F>, ComponentTypeAccountSubquery<F>>(
+                            ctx,
+                            FieldAccountSubqueryCall(AssignedAccountSubquery {
+                                block_number: assigned.block_number,
+                                addr: assigned.address,
+                                field_idx: assigned.field_idx,
+                            }),
+                        )
+                        .unwrap();
+                    ctx.constrain_equal(&assigned.value_hilo.hi(), &result.hi());
+                    ctx.constrain_equal(&assigned.value_hilo.lo(), &result.lo());
+
+                    assigned
+                })
+                .collect()
+        }
+        pub fn storage_assigned(
+            &self,
+            ctx: &mut Context<F>,
+            promise_caller: &PromiseCaller<F>,
+        ) -> Vec<StoragePayload<AssignedValue<F>>> {
+            self.storages
+                .iter()
+                .map(|p| {
+                    let assigned = p.assign_axiom(ctx);
+                    let result = promise_caller
+                        .call::<FieldStorageSubqueryCall<F>, ComponentTypeStorageSubquery<F>>(
+                            ctx,
+                            FieldStorageSubqueryCall(AssignedStorageSubquery {
+                                block_number: assigned.block_number,
+                                addr: assigned.address,
+                                slot: assigned.slot,
+                            }),
+                        )
+                        .unwrap();
+
+                    ctx.constrain_equal(&assigned.value.hi(), &result.hi());
+                    ctx.constrain_equal(&assigned.value.lo(), &result.lo());
+
+                    assigned
+                })
+                .collect()
+        }
+
+        fn assign_halo2(
+            &self,
+            config: &init_state::InitStateTable,
+            layouter: &mut impl Layouter<F>,
+        ) -> Vec<Halo2AssignedCell<F>> {
+            todo!()
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct InitStateTable {
+        pub block_number: Column<Advice>, // TODO remove this
+        pub address: Column<Advice>,
+        pub field_tag: Column<Advice>,
+        pub storage_key_hi: Column<Advice>,
+        pub storage_key_lo: Column<Advice>,
+        pub storage_key_rlc: Column<Advice>,
+        pub value_hi: Column<Advice>,
+        pub value_lo: Column<Advice>,
+        pub value_rlc: Column<Advice>,
+    }
+
+    impl<F: Field> LookupTable<F> for InitStateTable {
+        fn columns(&self) -> Vec<Column<Any>> {
+            vec![
+                self.address.into(),
+                self.field_tag.into(),
+                self.storage_key_hi.into(),
+                self.storage_key_lo.into(),
+                self.storage_key_rlc.into(),
+                self.value_hi.into(),
+                self.value_lo.into(),
+                self.value_rlc.into(),
+            ]
+        }
+
+        fn annotations(&self) -> Vec<String> {
+            vec![
+                "address".to_string(),
+                "field_tag".to_string(),
+                "storage_key_hi".to_string(),
+                "storage_key_lo".to_string(),
+                "storage_key_rlc".to_string(),
+                "value_hi".to_string(),
+                "value_lo".to_string(),
+                "value_rlc".to_string(),
+            ]
+        }
+    }
+
+    impl InitStateTable {
+        /// Construct a new InitStateTable
+        pub fn construct<F: Field>(meta: &mut ConstraintSystem<F>) -> Self {
+            Self {
+                block_number: meta.advice_column(),
+                address: meta.advice_column(),
+                field_tag: meta.advice_column(),
+                storage_key_hi: meta.advice_column(),
+                storage_key_lo: meta.advice_column(),
+                storage_key_rlc: meta.advice_column(),
+                value_hi: meta.advice_column(),
+                value_lo: meta.advice_column(),
+                value_rlc: meta.advice_column(),
+            }
+        }
+
+        /// Assign the `InitStateTable` from a `RwMap`.
+        pub fn assign_raw_halo2<F: Field>(
+            &self,
+            layouter: &mut impl Layouter<F>,
+            block: &Block<F>,
+            randomness: Value<F>,
+        ) -> Result<(), Error> {
+            // let init_state = InitState::from_witness_block(block);
+
+            // TODO use init_state instead of accessing rws again, as it will have filtered duplicates
+            layouter.assign_region(
+                || "is table",
+                |mut region| {
+                    let is_table_columns = <InitStateTable as LookupTable<F>>::advice_columns(self);
+                    let mut offset = 0;
+
+                    for column in is_table_columns {
+                        region.assign_advice(
+                            || "is table all-zero row",
+                            column,
+                            offset,
+                            || Value::known(F::ZERO),
+                        )?;
+                    }
+                    offset += 1;
+
+                    // TODO remove duplicates
+                    let account_rws = block.rws.0.get(&RwTableTag::Account).unwrap();
+                    for rw in account_rws.iter() {
+                        let address: F = rw.address().unwrap().to_scalar().unwrap();
+                        let field_tag: F = F::from(match rw.field_tag().unwrap() {
+                            1 => FieldTag::Nonce as u64,
+                            2 => FieldTag::Balance as u64,
+                            3 => FieldTag::CodeHash as u64,
+                            _ => unreachable!(),
+                        });
+
+                        let value_rlc = randomness.map(|r| rw.value_assignment(r));
+                        let value_hilo: HiLo<F> = HiLo::from(H256::from_uint(&rw.value_word()));
+
+                        let assigned_address = region.assign_advice(
+                            || format!("is table row {offset} address"),
+                            self.address,
+                            offset,
+                            || Value::known(address),
+                        )?;
+                        let assigned_field_tag = region.assign_advice(
+                            || format!("is table row {offset} field_tag"),
+                            self.field_tag,
+                            offset,
+                            || Value::known(field_tag),
+                        )?;
+                        let assigned_storage_key_hi = region.assign_advice(
+                            || format!("is table row {offset} storage_key hi"),
+                            self.storage_key_hi,
+                            offset,
+                            || Value::known(F::ZERO),
+                        )?;
+                        let assigned_storage_key_lo = region.assign_advice(
+                            || format!("is table row {offset} storage_key lo"),
+                            self.storage_key_lo,
+                            offset,
+                            || Value::known(F::ZERO),
+                        )?;
+                        let assigned_storage_key_rlc = region.assign_advice(
+                            || format!("is table row {offset} storage_key rlc"),
+                            self.storage_key_rlc,
+                            offset,
+                            || Value::known(F::ZERO),
+                        )?;
+                        let assigned_value_hi = region.assign_advice(
+                            || format!("is table row {offset} value hi"),
+                            self.value_hi,
+                            offset,
+                            || Value::known(value_hilo.hi()),
+                        )?;
+                        let assigned_value_lo = region.assign_advice(
+                            || format!("is table row {offset} value lo"),
+                            self.value_lo,
+                            offset,
+                            || Value::known(value_hilo.lo()),
+                        )?;
+                        let assigned_value_rlc = region.assign_advice(
+                            || format!("is table row {offset} value rlc"),
+                            self.value_rlc,
+                            offset,
+                            || value_rlc,
+                        )?;
+                        offset += 1;
+                    }
+
+                    // TODO remove duplicates
+                    let storage_rws = block.rws.0.get(&RwTableTag::AccountStorage).unwrap();
+                    for rw in storage_rws.iter() {
+                        let address: F = rw.address().unwrap().to_scalar().unwrap();
+                        let field_tag: F = F::from(FieldTag::Storage as u64);
+                        let key_hilo: HiLo<F> =
+                            HiLo::from(H256::from_uint(&rw.storage_key().unwrap()));
+                        let key_rlc = randomness
+                            .map(|r| rlc::value(&rw.storage_key().unwrap().to_le_bytes(), r));
+                        let value_hilo: HiLo<F> = HiLo::from(H256::from_uint(&rw.value_word()));
+                        let value_rlc = randomness.map(|r| rw.value_assignment(r));
+
+                        let assigned_address = region.assign_advice(
+                            || format!("is table row {offset} address"),
+                            self.address,
+                            offset,
+                            || Value::known(address),
+                        )?;
+                        let assigned_field_tag = region.assign_advice(
+                            || format!("is table row {offset} field_tag"),
+                            self.field_tag,
+                            offset,
+                            || Value::known(field_tag),
+                        )?;
+                        let assigned_storage_key_hi = region.assign_advice(
+                            || format!("is table row {offset} storage_key hi"),
+                            self.storage_key_hi,
+                            offset,
+                            || Value::known(key_hilo.hi()),
+                        )?;
+                        let assigned_storage_key_lo = region.assign_advice(
+                            || format!("is table row {offset} storage_key lo"),
+                            self.storage_key_lo,
+                            offset,
+                            || Value::known(key_hilo.lo()),
+                        )?;
+                        let assigned_storage_key_rlc = region.assign_advice(
+                            || format!("is table row {offset} storage_key rlc"),
+                            self.storage_key_rlc,
+                            offset,
+                            || key_rlc,
+                        )?;
+                        let assigned_value_rlc = region.assign_advice(
+                            || format!("is table row {offset} value rlc"),
+                            self.value_rlc,
+                            offset,
+                            || value_rlc,
+                        )?;
+                        let assigned_value_hi = region.assign_advice(
+                            || format!("is table row {offset} value hi"),
+                            self.value_hi,
+                            offset,
+                            || Value::known(value_hilo.hi()),
+                        )?;
+                        let assigned_value_lo = region.assign_advice(
+                            || format!("is table row {offset} value lo"),
+                            self.value_lo,
+                            offset,
+                            || Value::known(value_hilo.lo()),
+                        )?;
+                        offset += 1;
+                    }
+
+                    Ok(())
+                },
+            )
+        }
+    }
 }
 
 mod account {
     use super::*;
 
+    #[derive(Clone, Copy)]
+    pub enum FieldIdx {
+        Nonce = 0,
+        Balance = 1,
+        StorageRoot = 2,
+        CodeHash = 3,
+    }
+
     pub struct AccountPayload<AssignedType> {
-        pub block_number: AssignedType,
+        pub block_number: AssignedType, // TODO constrain the block number later
         pub address: AssignedType,
         pub field_idx: AssignedType,
-        pub value: HiLo<AssignedType>,
+        pub value_hilo: HiLo<AssignedType>,
     }
 
     pub type AccountSubqueryResult = AnySubqueryResult<AccountSubquery, H256>;
@@ -66,50 +440,107 @@ mod account {
                 block_number: ctx.load_witness(F::from(self.subquery.block_number as u64)),
                 address: ctx.load_witness(self.subquery.addr.to_scalar().unwrap()),
                 field_idx: ctx.load_witness(F::from(self.subquery.field_idx as u64)),
-                value: HiLo::<F>::from(self.value).assign(ctx),
+                value_hilo: HiLo::<F>::from(self.value).assign(ctx),
             }
         }
 
         fn assign_halo2(
             &self,
-            config: &MultiConfig,
+            config: &init_state::InitStateTable,
             layouter: &mut impl Layouter<F>,
+            randomness: Value<F>,
         ) -> Halo2AccountPayload<F> {
             layouter
                 .assign_region(
                     || "myregion",
                     |mut region| {
                         let mut offset = 0;
+                        // let account_rws = self.block.rws.0.get(&RwTableTag::Account).unwrap();
 
-                        let mut assign_advice = |value: F| {
-                            let cell = region.assign_advice(
-                                || format!("assign advice {offset} {value:?}"),
-                                config.advice,
-                                offset,
-                                || Value::known(Assigned::Trivial(value)),
-                            );
-                            offset += 1;
-                            cell
-                        };
-                        let block_number: AssignedCell<Assigned<F>, F> =
-                            assign_advice(F::from(self.subquery.block_number as u64))?;
-                        let address = assign_advice(self.subquery.addr.to_scalar().unwrap())?;
-                        let field_idx = assign_advice(F::from(self.subquery.field_idx as u64))?;
+                        let address: F = self.subquery.addr.to_scalar().unwrap();
+                        let field_tag: F = F::from(match self.subquery.field_idx {
+                            1 => account::FieldIdx::Nonce as u64,
+                            2 => account::FieldIdx::Balance as u64,
+                            3 => account::FieldIdx::CodeHash as u64,
+                            _ => unreachable!(),
+                        });
 
-                        let mut assign_hilo = |value: HiLo<F>| -> Result<_, Error> {
-                            let [hi, lo] = value.hi_lo();
-                            let hi = assign_advice(hi)?;
-                            let lo = assign_advice(lo)?;
-                            Ok(HiLo::from_lo_hi([hi, lo]))
-                        };
+                        let value_rlc = randomness
+                            .map(|r| Assigned::Trivial(rlc::value(self.value.as_bytes(), r)));
+                        let value_hilo = HiLo::<F>::from(self.value);
+                        // let value_hilo = HiLo::from_hi_lo(
+                        //     HiLo::<F>::from(self.value).hi_lo().map(Assigned::Trivial),
+                        // );
 
-                        let value = assign_hilo(HiLo::from(self.value))?;
+                        let assigned_block_number = region.assign_advice(
+                            || format!("is table row {offset} block_number"),
+                            config.block_number,
+                            offset,
+                            || {
+                                Value::known(Assigned::Trivial(F::from(
+                                    self.subquery.block_number as u64,
+                                )))
+                            },
+                        )?;
+
+                        let assigned_address = region.assign_advice(
+                            || format!("is table row {offset} address"),
+                            config.address,
+                            offset,
+                            || Value::known(Assigned::Trivial(address)),
+                        )?;
+                        let assigned_field_tag = region.assign_advice(
+                            || format!("is table row {offset} field_tag"),
+                            config.field_tag,
+                            offset,
+                            || Value::known(Assigned::Trivial(field_tag)),
+                        )?;
+                        let assigned_storage_key_hi = region.assign_advice(
+                            || format!("is table row {offset} storage_key hi"),
+                            config.storage_key_hi,
+                            offset,
+                            || Value::known(Assigned::Trivial(F::ZERO)),
+                        )?;
+                        let assigned_storage_key_lo = region.assign_advice(
+                            || format!("is table row {offset} storage_key lo"),
+                            config.storage_key_lo,
+                            offset,
+                            || Value::known(Assigned::Trivial(F::ZERO)),
+                        )?;
+                        // TODO add gate which ensures rlc == hilo
+                        let assigned_storage_key_rlc = region.assign_advice(
+                            || format!("is table row {offset} storage_key rlc"),
+                            config.storage_key_rlc,
+                            offset,
+                            || Value::known(Assigned::Trivial(F::ZERO)),
+                        )?;
+                        let assigned_value_hi = region.assign_advice(
+                            || format!("is table row {offset} value hi"),
+                            config.value_hi,
+                            offset,
+                            || Value::known(Assigned::Trivial(value_hilo.hi())),
+                        )?;
+                        let assigned_value_lo = region.assign_advice(
+                            || format!("is table row {offset} value lo"),
+                            config.value_lo,
+                            offset,
+                            || Value::known(Assigned::Trivial(value_hilo.lo())),
+                        )?;
+                        // TODO add gate which ensures rlc == hilo
+                        let assigned_value_rlc = region.assign_advice(
+                            || format!("is table row {offset} value rlc"),
+                            config.value_rlc,
+                            offset,
+                            || value_rlc,
+                        )?;
+
+                        offset += 1;
 
                         Ok(Halo2AccountPayload {
-                            block_number,
-                            address,
-                            field_idx,
-                            value,
+                            block_number: assigned_block_number,
+                            address: assigned_address,
+                            field_idx: assigned_field_tag,
+                            value_hilo: HiLo::from_hi_lo([assigned_value_hi, assigned_value_lo]),
                         })
                     },
                 )
@@ -146,8 +577,9 @@ mod storage {
 
         fn assign_halo2(
             &self,
-            config: &MultiConfig,
+            config: &init_state::InitStateTable,
             layouter: &mut impl Layouter<F>,
+            randomness: Value<F>,
         ) -> Halo2StoragePayload<F> {
             layouter
                 .assign_region(
@@ -155,34 +587,86 @@ mod storage {
                     |mut region| {
                         let mut offset = 0;
 
-                        let mut assign_advice = |value: F| {
-                            let cell = region.assign_advice(
-                                || format!("assign advice {offset} {value:?}"),
-                                config.advice,
-                                offset,
-                                || Value::known(Assigned::Trivial(value)),
-                            );
-                            offset += 1;
-                            cell
-                        };
-                        let block_number: AssignedCell<Assigned<F>, F> =
-                            assign_advice(F::from(self.subquery.block_number as u64))?;
-                        let address = assign_advice(self.subquery.addr.to_scalar().unwrap())?;
+                        let address: F = self.subquery.addr.to_scalar().unwrap();
+                        let field_tag: F = F::ZERO;
 
-                        let mut assign_hilo = |value: HiLo<F>| -> Result<_, Error> {
-                            let [hi, lo] = value.hi_lo();
-                            let hi = assign_advice(hi)?;
-                            let lo = assign_advice(lo)?;
-                            Ok(HiLo::from_lo_hi([hi, lo]))
-                        };
-                        let slot = assign_hilo(HiLo::from(H256::from_uint(&self.subquery.slot)))?;
-                        let value = assign_hilo(HiLo::from(self.value))?;
+                        let key = H256::from_uint(&self.subquery.slot);
+                        let key_rlc = randomness.map(|r| rlc::value(key.as_bytes(), r));
+                        let key_hilo = HiLo::<F>::from(key);
+
+                        let value_rlc = randomness.map(|r| rlc::value(self.value.as_bytes(), r));
+                        let value_hilo = HiLo::<F>::from(self.value);
+
+                        let assigned_block_number = region.assign_advice(
+                            || format!("is table row {offset} block_number"),
+                            config.block_number,
+                            offset,
+                            || {
+                                Value::known(Assigned::Trivial(F::from(
+                                    self.subquery.block_number as u64,
+                                )))
+                            },
+                        )?;
+                        let assigned_address = region.assign_advice(
+                            || format!("is table row {offset} address"),
+                            config.address,
+                            offset,
+                            || Value::known(Assigned::Trivial(address)),
+                        )?;
+                        let assigned_field_tag = region.assign_advice(
+                            || format!("is table row {offset} field_tag"),
+                            config.field_tag,
+                            offset,
+                            || Value::known(Assigned::Trivial(field_tag)),
+                        )?;
+                        let assigned_storage_key_hi = region.assign_advice(
+                            || format!("is table row {offset} storage_key hi"),
+                            config.storage_key_hi,
+                            offset,
+                            || Value::known(Assigned::Trivial(key_hilo.hi())),
+                        )?;
+                        let assigned_storage_key_lo = region.assign_advice(
+                            || format!("is table row {offset} storage_key lo"),
+                            config.storage_key_lo,
+                            offset,
+                            || Value::known(Assigned::Trivial(key_hilo.lo())),
+                        )?;
+                        // TODO add gate which ensures rlc == hilo
+                        let assigned_storage_key_rlc = region.assign_advice(
+                            || format!("is table row {offset} storage_key rlc"),
+                            config.storage_key_rlc,
+                            offset,
+                            || key_rlc.map(Assigned::Trivial),
+                        )?;
+                        // TODO add gate which ensures rlc == hilo
+                        let assigned_value_rlc = region.assign_advice(
+                            || format!("is table row {offset} value rlc"),
+                            config.value_rlc,
+                            offset,
+                            || value_rlc,
+                        )?;
+                        let assigned_value_hi = region.assign_advice(
+                            || format!("is table row {offset} value hi"),
+                            config.value_hi,
+                            offset,
+                            || Value::known(Assigned::Trivial(value_hilo.hi())),
+                        )?;
+                        let assigned_value_lo = region.assign_advice(
+                            || format!("is table row {offset} value lo"),
+                            config.value_lo,
+                            offset,
+                            || Value::known(Assigned::Trivial(value_hilo.lo())),
+                        )?;
+                        offset += 1;
 
                         Ok(Halo2StoragePayload {
-                            block_number,
-                            address,
-                            slot,
-                            value,
+                            block_number: assigned_block_number,
+                            address: assigned_address,
+                            slot: HiLo::from_hi_lo([
+                                assigned_storage_key_hi,
+                                assigned_storage_key_lo,
+                            ]),
+                            value: HiLo::from_hi_lo([assigned_value_hi, assigned_value_lo]),
                         })
                     },
                 )
@@ -191,123 +675,52 @@ mod storage {
     }
 }
 
-#[derive(Clone, Default, Debug, Serialize)]
-pub struct MultiInputs<F: Field> {
-    accounts: Vec<account::AccountSubqueryResult>,
-    storages: Vec<storage::StorageSubqueryResult>,
-    _marker: PhantomData<F>,
-}
+// #[derive(Clone, Default, Debug, Serialize)]
+// pub struct MultiInputs<F: Field> {
+//     init_state: init_state::InitState,
+//     _marker: PhantomData<F>,
+// }
 
-impl<F: Field> MultiInputs<F> {
-    fn accounts_assigned(
-        &self,
-        ctx: &mut Context<F>,
-        promise_caller: &PromiseCaller<F>,
-    ) -> Vec<[AssignedValue<F>; 2]> {
-        self.accounts
-            .iter()
-            .map(|q| {
-                let assigned = q.assign_axiom(ctx);
-                promise_caller
-                    .call::<FieldAccountSubqueryCall<F>, ComponentTypeAccountSubquery<F>>(
-                        ctx,
-                        FieldAccountSubqueryCall(AssignedAccountSubquery {
-                            block_number: assigned.block_number,
-                            addr: assigned.address,
-                            field_idx: assigned.field_idx,
-                        }),
-                    )
-                    .unwrap()
-                    .hi_lo()
-            })
-            .collect()
-    }
-    fn storage_assigned(
-        &self,
-        ctx: &mut Context<F>,
-        promise_caller: &PromiseCaller<F>,
-    ) -> Vec<[AssignedValue<F>; 2]> {
-        self.storages
-            .iter()
-            .map(|p| {
-                let assigned = p.assign_axiom(ctx);
-                promise_caller
-                    .call::<FieldStorageSubqueryCall<F>, ComponentTypeStorageSubquery<F>>(
-                        ctx,
-                        FieldStorageSubqueryCall(AssignedStorageSubquery {
-                            block_number: assigned.block_number,
-                            addr: assigned.address,
-                            slot: assigned.slot,
-                        }),
-                    )
-                    .unwrap()
-                    .hi_lo()
-            })
-            .collect()
-    }
+// #[derive(Clone, Default, Debug, Serialize, Deserialize)]
+// pub struct AccountInput<F: Field> {
+//     pub block_number: u64,
+//     pub address: Address,
+//     pub field_idx: u64,
+//     pub value: H256,
+//     pub _marker: PhantomData<F>,
+// }
 
-    fn assign_axiom(
-        &self,
-        ctx: &mut Context<F>,
-        promise_caller: &PromiseCaller<F>,
-    ) -> Vec<AssignedValue<F>> {
-        self.storage_assigned(ctx, promise_caller)
-            .iter()
-            .chain(self.accounts_assigned(ctx, promise_caller).iter())
-            .flatten()
-            .copied()
-            .collect_vec()
-    }
+// pub struct AxiomAccountPayload<F: Field> {
+//     pub block_number: AxiomAssignedValue<F>,
+//     pub address: AxiomAssignedValue<F>,
+//     pub field_idx: AxiomAssignedValue<F>,
+//     pub value: HiLo<AxiomAssignedValue<F>>,
+// }
 
-    fn assign_halo2(
-        &self,
-        config: &MultiConfig,
-        layouter: &mut impl Layouter<F>,
-    ) -> Vec<Halo2AssignedCell<F>> {
-        todo!()
-    }
-}
+// impl<F: Field> AccountInput<F> {
+//     pub fn assign_axiom(&self, ctx: &mut Context<F>) -> AxiomAccountPayload<F> {
+//         AxiomAccountPayload {
+//             block_number: ctx.load_witness(F::from(self.block_number)),
+//             address: ctx.load_witness(self.address.to_scalar().unwrap()),
+//             field_idx: ctx.load_witness(F::from(self.field_idx)),
+//             value: HiLo::<F>::from(self.value).assign(ctx),
+//         }
+//     }
+// }
 
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
-pub struct AccountInput<F: Field> {
-    pub block_number: u64,
-    pub address: Address,
-    pub field_idx: u64,
-    pub value: H256,
-    pub _marker: PhantomData<F>,
-}
+// #[derive(Clone, Default, Debug, Serialize, Deserialize)]
+// pub struct StorageInput<F: Field> {
+//     pub block_number: u64,
+//     pub address: Address,
+//     pub slot: H256,
+//     pub value: H256,
+//     pub _marker: PhantomData<F>,
+// }
 
-pub struct AxiomAccountPayload<F: Field> {
-    pub block_number: AxiomAssignedValue<F>,
-    pub address: AxiomAssignedValue<F>,
-    pub field_idx: AxiomAssignedValue<F>,
-    pub value: HiLo<AxiomAssignedValue<F>>,
-}
-
-impl<F: Field> AccountInput<F> {
-    pub fn assign_axiom(&self, ctx: &mut Context<F>) -> AxiomAccountPayload<F> {
-        AxiomAccountPayload {
-            block_number: ctx.load_witness(F::from(self.block_number)),
-            address: ctx.load_witness(self.address.to_scalar().unwrap()),
-            field_idx: ctx.load_witness(F::from(self.field_idx)),
-            value: HiLo::<F>::from(self.value).assign(ctx),
-        }
-    }
-}
-
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
-pub struct StorageInput<F: Field> {
-    pub block_number: u64,
-    pub address: Address,
-    pub slot: H256,
-    pub value: H256,
-    pub _marker: PhantomData<F>,
-}
-
-#[derive(Clone)]
-pub struct MultiConfig {
-    advice: Column<Advice>,
-}
+// #[derive(Clone)]
+// pub struct MultiConfig {
+//     advice: Column<Advice>,
+// }
 
 #[derive(Clone, Default)]
 pub struct MultiInputParams;
@@ -317,18 +730,18 @@ impl CoreBuilderParams for MultiInputParams {
         CoreBuilderOutputParams::new(vec![])
     }
 }
-impl<F: Field> DummyFrom<MultiInputParams> for MultiInputs<F> {
+impl<F: Field> DummyFrom<MultiInputParams> for init_state::InitState<F> {
     fn dummy_from(_seed: MultiInputParams) -> Self {
-        MultiInputs::default()
+        init_state::InitState::default()
     }
 }
 
 pub struct MultiInputsCircuitBuilder<F: Field> {
-    input: Option<MultiInputs<F>>,
+    input: Option<init_state::InitState<F>>,
 }
 
 impl<F: Field> ComponentBuilder<F> for MultiInputsCircuitBuilder<F> {
-    type Config = MultiConfig;
+    type Config = init_state::InitStateTable;
 
     type Params = MultiInputParams;
 
@@ -345,7 +758,15 @@ impl<F: Field> ComponentBuilder<F> for MultiInputsCircuitBuilder<F> {
         _params: Self::Params,
     ) -> Self::Config {
         Self::Config {
-            advice: meta.advice_column(),
+            address: meta.advice_column(),
+            field_tag: meta.advice_column(),
+            block_number: meta.advice_column(),
+            storage_key_hi: meta.advice_column(),
+            storage_key_lo: meta.advice_column(),
+            storage_key_rlc: meta.advice_column(),
+            value_hi: meta.advice_column(),
+            value_lo: meta.advice_column(),
+            value_rlc: meta.advice_column(),
         }
     }
 
@@ -361,7 +782,7 @@ impl<F: Field> CoreBuilder<F> for MultiInputsCircuitBuilder<F> {
 
     type PublicInstanceWitness = LogicalEmpty<AssignedValue<F>>;
 
-    type CoreInput = MultiInputs<F>;
+    type CoreInput = init_state::InitState<F>;
 
     fn feed_input(&mut self, input: Self::CoreInput) -> anyhow::Result<()> {
         self.input = Some(input);
@@ -380,14 +801,12 @@ impl<F: Field> CoreBuilder<F> for MultiInputsCircuitBuilder<F> {
 
         let ctx = builder.base.main(0);
 
-        let promise_results = self
-            .input
-            .as_ref()
-            .unwrap()
-            .assign_axiom(ctx, &promise_caller);
+        let input = self.input.as_ref().unwrap();
+        let accounts = input.accounts_assigned(ctx, &promise_caller);
+        let storages = input.storage_assigned(ctx, &promise_caller);
 
         CoreBuilderOutput {
-            public_instances: promise_results, // this should not be public
+            public_instances: vec![],
             virtual_table: vec![],
             logical_results: vec![],
         }
@@ -454,26 +873,19 @@ async fn main() {
 
     let block_number = 19211974; // random block from 12 feb 2024
 
-    #[derive(Clone, Copy)]
-    enum AccountSubqueryField {
-        Nonce = 0,
-        Balance = 1,
-        StorageRoot = 2,
-    }
-
     // input from the witness
-    let account_inputs: Vec<(&str, AccountSubqueryField)> = vec![
+    let account_inputs: Vec<(&str, account::FieldIdx)> = vec![
         (
             "0x60594a405d53811d3bc4766596efd80fd545a270",
-            AccountSubqueryField::Nonce,
+            account::FieldIdx::Nonce,
         ),
         (
             "0x60594a405d53811d3bc4766596efd80fd545a270",
-            AccountSubqueryField::Balance,
+            account::FieldIdx::Balance,
         ),
         (
             "0x60594a405d53811d3bc4766596efd80fd545a270",
-            AccountSubqueryField::StorageRoot,
+            account::FieldIdx::StorageRoot,
         ),
     ];
     let storage_inputs = vec![
@@ -509,9 +921,10 @@ async fn main() {
                 field_idx: field_idx as u32,
             },
             value: match field_idx {
-                AccountSubqueryField::Nonce => H256::from_uint(&U256::from(proof.nonce.as_u64())),
-                AccountSubqueryField::Balance => H256::from_uint(&proof.balance),
-                AccountSubqueryField::StorageRoot => proof.storage_hash,
+                account::FieldIdx::Nonce => H256::from_uint(&U256::from(proof.nonce.as_u64())),
+                account::FieldIdx::Balance => H256::from_uint(&proof.balance),
+                account::FieldIdx::StorageRoot => proof.storage_hash,
+                account::FieldIdx::CodeHash => proof.code_hash,
             },
         });
     }
@@ -534,7 +947,7 @@ async fn main() {
         });
     }
 
-    let circuit_input = MultiInputs::<Fr> {
+    let circuit_input = init_state::InitState::<Fr> {
         accounts: account_subqueries,
         storages: storage_subqueries,
         _marker: PhantomData,
